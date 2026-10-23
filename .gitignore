@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# VS Code
+.vscode/
+
+# Local run artifacts
+results/
+*.log
+
+# Virtual environments
+.venv/
+venv/
