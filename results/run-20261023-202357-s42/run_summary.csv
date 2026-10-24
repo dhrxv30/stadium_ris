@@ -1,0 +1,2 @@
+run_id,elapsed_s,feedback_received,feedback_accepted,rejected_duplicate,rejected_stale,malformed,oob_tx_attempts,oob_acked,oob_failed,oob_retries,opt_no_change,opt_apply,total_zones,total_panels,scheduler_type,notes
+run-20261023-202357-s42,0.1,29,27,1,1,3,0,0,0,0,0,0,5,32,CONGESTION_AWARE,"All RIS/channel values are SIMULATED. OOB link is software simulation, not physical Sub-GHz radio."

@@ -1,0 +1,38 @@
+20:23:57 INFO    Laptop B listening on 127.0.0.1:52860 (TCP, length-prefixed JSON)
+20:23:57 INFO    connection opened from ('127.0.0.1', 52861)
+20:23:57 INFO    adopted run_id run-20261023-202357-s42 from A
+20:23:57 DEBUG   Z1 seq=1 accepted
+20:23:57 DEBUG   Z2 seq=1 accepted
+20:23:57 DEBUG   Z3 seq=1 accepted
+20:23:57 DEBUG   Z4 seq=1 accepted
+20:23:57 DEBUG   Z5 seq=1 accepted
+20:23:57 DEBUG   Z1 seq=2 accepted
+20:23:57 DEBUG   Z2 seq=2 accepted
+20:23:57 DEBUG   Z3 seq=2 accepted
+20:23:57 DEBUG   Z4 seq=2 accepted
+20:23:57 DEBUG   Z5 seq=2 accepted
+20:23:57 DEBUG   Z1 seq=3 accepted
+20:23:57 DEBUG   Z2 seq=3 accepted
+20:23:57 DEBUG   Z3 seq=3 accepted
+20:23:57 DEBUG   Z4 seq=3 accepted
+20:23:57 DEBUG   Z5 seq=3 accepted
+20:23:57 DEBUG   Z1 seq=4 accepted
+20:23:57 DEBUG   Z2 seq=4 accepted
+20:23:57 DEBUG   Z3 seq=4 accepted
+20:23:57 DEBUG   Z4 seq=4 accepted
+20:23:57 DEBUG   Z5 seq=4 accepted
+20:23:57 DEBUG   Z1 seq=5 accepted
+20:23:57 DEBUG   Z2 seq=5 accepted
+20:23:57 DEBUG   Z3 seq=5 accepted
+20:23:57 DEBUG   Z4 seq=5 accepted
+20:23:57 DEBUG   Z5 seq=5 accepted
+20:23:57 DEBUG   Z1 seq=6 accepted
+20:23:57 DEBUG   Z1 seq=7 accepted
+20:23:57 WARNING Z1 feedback REJECTED_DUPLICATE: msg_id already processed
+20:23:57 WARNING Z1 feedback REJECTED_STALE: window_end is 1000.0s old (> 5.0s)
+20:23:57 WARNING malformed message rejected: not valid UTF-8 JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+20:23:57 WARNING malformed message rejected: missing payload field 'delivered'
+20:23:57 WARNING malformed message rejected: protocol version 99 != 1
+20:23:57 INFO    connection closed from ('127.0.0.1', 52861)
+20:23:57 INFO    Laptop B listener stopped
+20:23:57 INFO    CSV reports written to C:\Users\modia\OneDrive\Desktop\stadium_ris\results\run-20261023-202357-s42

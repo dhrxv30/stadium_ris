@@ -1,0 +1,27 @@
+19:57:25 INFO    Laptop B listening on 127.0.0.1:62223 (TCP, length-prefixed JSON)
+19:57:25 INFO    connection opened from ('127.0.0.1', 62224)
+19:57:25 INFO    adopted run_id run-20261023-195725-s42 from A
+19:57:25 DEBUG   Z1 seq=1 accepted
+19:57:25 DEBUG   Z2 seq=1 accepted
+19:57:25 DEBUG   Z3 seq=1 accepted
+19:57:25 DEBUG   Z4 seq=1 accepted
+19:57:25 DEBUG   Z5 seq=1 accepted
+19:57:25 DEBUG   Z1 seq=2 accepted
+19:57:25 DEBUG   Z2 seq=2 accepted
+19:57:25 DEBUG   Z3 seq=2 accepted
+19:57:25 DEBUG   Z4 seq=2 accepted
+19:57:25 DEBUG   Z5 seq=2 accepted
+19:57:25 DEBUG   Z1 seq=3 accepted
+19:57:25 DEBUG   Z2 seq=3 accepted
+19:57:25 DEBUG   Z3 seq=3 accepted
+19:57:25 DEBUG   Z4 seq=3 accepted
+19:57:25 DEBUG   Z5 seq=3 accepted
+19:57:25 DEBUG   Z1 seq=4 accepted
+19:57:25 DEBUG   Z1 seq=5 accepted
+19:57:25 WARNING Z1 feedback REJECTED_DUPLICATE: msg_id already processed
+19:57:25 WARNING Z1 feedback REJECTED_STALE: window_end is 1000.0s old (> 5.0s)
+19:57:25 WARNING malformed message rejected: not valid UTF-8 JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+19:57:25 WARNING malformed message rejected: missing payload field 'delivered'
+19:57:25 WARNING malformed message rejected: protocol version 99 != 1
+19:57:25 INFO    connection closed from ('127.0.0.1', 62224)
+19:57:25 INFO    Laptop B listener stopped
