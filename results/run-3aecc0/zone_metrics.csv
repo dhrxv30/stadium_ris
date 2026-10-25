@@ -1,0 +1,6 @@
+timestamp_iso,timestamp_epoch_s,run_id,elapsed_s,zone_id,senders,receivers,generated_ul,delivered_ul,dropped_ul,pending_ul,generated_dl,delivered_dl,dropped_dl,pending_dl,total_generated,total_delivered,total_dropped,pdr_pct,plr_pct,queue_occupancy,queue_capacity,queue_occupancy_pct,sinr_db,estimated_per,mean_latency_ms,p95_latency_ms,throughput_bps,congestion_state,last_decision,last_ris_update
+2026-10-24T10:51:32.000Z,1792839092.028,run-3aecc0,4.2,Z1,5000,5000,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,NORMAL,,
+2026-10-24T10:51:32.000Z,1792839092.028,run-3aecc0,4.2,Z2,5000,5000,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,NORMAL,,
+2026-10-24T10:51:32.000Z,1792839092.028,run-3aecc0,4.2,Z3,5000,5000,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,NORMAL,,
+2026-10-24T10:51:32.000Z,1792839092.028,run-3aecc0,4.2,Z4,5000,5000,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,NORMAL,,
+2026-10-24T10:51:32.000Z,1792839092.028,run-3aecc0,4.2,Z5,5000,5000,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,NORMAL,,

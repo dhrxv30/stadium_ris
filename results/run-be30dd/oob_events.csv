@@ -1,0 +1,22 @@
+timestamp_iso,timestamp_epoch_s,run_id,event_id,command_id,target_panel_id,target_zone_id,status,details
+2026-10-25T02:21:57.000Z,1792894917.259,run-be30dd,EVT-CMD-1,CMD-0001,P29,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:21:58.000Z,1792894918.261,run-be30dd,EVT-CMD-3,CMD-0003,P2,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:21:59.000Z,1792894919.276,run-be30dd,EVT-CMD-5,CMD-0005,P24,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:00.000Z,1792894920.267,run-be30dd,EVT-CMD-7,CMD-0007,P16,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:01.000Z,1792894921.275,run-be30dd,EVT-CMD-9,CMD-0009,P9,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:02.000Z,1792894922.277,run-be30dd,EVT-CMD-11,CMD-0011,P20,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:03.000Z,1792894923.294,run-be30dd,EVT-CMD-13,CMD-0013,P20,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:04.000Z,1792894924.294,run-be30dd,EVT-CMD-15,CMD-0015,P13,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:05.000Z,1792894925.311,run-be30dd,EVT-CMD-17,CMD-0017,P13,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:06.000Z,1792894926.325,run-be30dd,EVT-CMD-19,CMD-0019,P28,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:07.000Z,1792894927.34,run-be30dd,EVT-CMD-21,CMD-0021,P30,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:08.000Z,1792894928.357,run-be30dd,EVT-CMD-23,CMD-0023,P6,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:09.000Z,1792894929.373,run-be30dd,EVT-CMD-25,CMD-0025,P2,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:10.000Z,1792894930.378,run-be30dd,EVT-CMD-27,CMD-0027,P26,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:11.000Z,1792894931.404,run-be30dd,EVT-CMD-29,CMD-0029,P13,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:12.000Z,1792894932.42,run-be30dd,EVT-CMD-31,CMD-0031,P14,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:13.000Z,1792894933.436,run-be30dd,EVT-CMD-33,CMD-0033,P15,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:14.000Z,1792894934.452,run-be30dd,EVT-CMD-35,CMD-0035,P17,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:15.000Z,1792894935.456,run-be30dd,EVT-CMD-37,CMD-0037,P7,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:16.000Z,1792894936.487,run-be30dd,EVT-CMD-39,CMD-0039,P13,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-25T02:22:17.000Z,1792894937.502,run-be30dd,EVT-CMD-41,CMD-0041,P14,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB

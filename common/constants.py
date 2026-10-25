@@ -1,0 +1,22 @@
+"""Shared constants. Single source of truth for A, B and C."""
+PROTOCOL_VERSION = 1
+MAX_MESSAGE_BYTES_DEFAULT = 1_048_576
+LENGTH_PREFIX_BYTES = 4            # big-endian unsigned 32-bit length prefix
+
+# Module names (used as `source` / `destination`)
+LAPTOP_A, LAPTOP_B, LAPTOP_C = "A", "B", "C"
+MODULES = (LAPTOP_A, LAPTOP_B, LAPTOP_C)
+
+# Message types
+MSG_HELLO = "HELLO"
+MSG_HEARTBEAT = "HEARTBEAT"
+MSG_TELEMETRY_A = "TELEMETRY_A"      # Laptop A PDU/zone statistics
+MSG_TELEMETRY_B = "TELEMETRY_B"      # Laptop B decisions/panel/OOB statistics
+MSG_EVENT = "EVENT"                  # discrete event (PDU, OOB, decision...)
+MSG_ERROR = "ERROR"
+MESSAGE_TYPES = (MSG_HELLO, MSG_HEARTBEAT, MSG_TELEMETRY_A, MSG_TELEMETRY_B,
+                 MSG_EVENT, MSG_ERROR)
+
+NUM_ZONES = 5
+NUM_PANELS = 32
+ZONE_IDS = tuple(f"Z{i}" for i in range(1, NUM_ZONES + 1))

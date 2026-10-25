@@ -1,0 +1,2 @@
+run_id,start_time_iso,end_time_iso,total_duration_s,total_devices,total_senders,total_receivers,ul_generated,ul_delivered,ul_dropped,dl_generated,dl_delivered,dl_dropped,total_generated,total_delivered,total_dropped,final_pdr_pct,final_plr_pct,mean_latency_ms,p95_latency_ms,throughput_bps,oob_unique_commands,oob_acknowledged,oob_timeouts,final_oob_ack_ratio_pct
+run-46af41,2026-10-23T17:22:22.000Z,2026-10-23T17:22:26.000Z,4.08,50000,25000,25000,814,775,39,863,822,41,1677,1597,80,95.23,4.77,18.7,40.2,7786780.0,8,7,1,87.5

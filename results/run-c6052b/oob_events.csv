@@ -1,0 +1,16 @@
+timestamp_iso,timestamp_epoch_s,run_id,event_id,command_id,target_panel_id,target_zone_id,status,details
+2026-10-24T11:13:28.000Z,1792840408.769,run-c6052b,EVT-CMD-1,CMD-0001,P29,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:29.000Z,1792840409.769,run-c6052b,EVT-CMD-3,CMD-0003,P2,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:30.000Z,1792840410.769,run-c6052b,EVT-CMD-5,CMD-0005,P24,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:31.000Z,1792840411.777,run-c6052b,EVT-CMD-7,CMD-0007,P16,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:32.000Z,1792840412.795,run-c6052b,EVT-CMD-9,CMD-0009,P9,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:33.000Z,1792840413.797,run-c6052b,EVT-CMD-11,CMD-0011,P20,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:34.000Z,1792840414.831,run-c6052b,EVT-CMD-13,CMD-0013,P20,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:35.000Z,1792840415.841,run-c6052b,EVT-CMD-15,CMD-0015,P13,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:36.000Z,1792840416.857,run-c6052b,EVT-CMD-17,CMD-0017,P13,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:37.000Z,1792840417.863,run-c6052b,EVT-CMD-19,CMD-0019,P28,Z4,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:38.000Z,1792840418.841,run-c6052b,EVT-CMD-21,CMD-0021,P30,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:39.000Z,1792840419.86,run-c6052b,EVT-CMD-23,CMD-0023,P6,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:40.000Z,1792840420.89,run-c6052b,EVT-CMD-25,CMD-0025,P2,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:41.000Z,1792840421.973,run-c6052b,EVT-CMD-27,CMD-0027,P26,Z1,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-24T11:13:42.000Z,1792840422.988,run-c6052b,EVT-CMD-29,CMD-0029,P13,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB

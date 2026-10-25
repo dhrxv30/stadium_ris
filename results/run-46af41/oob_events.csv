@@ -1,0 +1,5 @@
+timestamp_iso,timestamp_epoch_s,run_id,event_id,command_id,target_panel_id,target_zone_id,status,details
+2026-10-23T17:22:22.000Z,1792776142.608,run-46af41,EVT-CMD-1,CMD-0001,P29,Z2,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-23T17:22:23.000Z,1792776143.61,run-46af41,EVT-CMD-3,CMD-0003,P2,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-23T17:22:24.000Z,1792776144.631,run-46af41,EVT-CMD-5,CMD-0005,P24,Z3,RIS_COMMAND,Adaptive phase codebook dispatched via OOB
+2026-10-23T17:22:25.000Z,1792776145.65,run-46af41,EVT-CMD-7,CMD-0007,P16,Z5,RIS_COMMAND,Adaptive phase codebook dispatched via OOB

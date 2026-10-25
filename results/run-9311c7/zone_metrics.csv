@@ -1,0 +1,6 @@
+timestamp_iso,timestamp_epoch_s,run_id,elapsed_s,zone_id,senders,receivers,generated_ul,delivered_ul,dropped_ul,pending_ul,generated_dl,delivered_dl,dropped_dl,pending_dl,total_generated,total_delivered,total_dropped,pdr_pct,plr_pct,queue_occupancy,queue_capacity,queue_occupancy_pct,sinr_db,estimated_per,mean_latency_ms,p95_latency_ms,throughput_bps,congestion_state,last_decision,last_ris_update
+2026-10-24T10:59:30.000Z,1792839570.607,run-9311c7,3.05,Z1,5000,5000,36,34,1,2,51,49,2,9,87,83,3,96.51,3.49,36,500,7.2,23.8,0.023,14.4,43.9,1868879.0,NORMAL,NO_CHANGE,CB_3
+2026-10-24T10:59:30.000Z,1792839570.607,run-9311c7,3.05,Z2,5000,5000,36,34,1,7,51,49,2,3,87,83,3,96.51,3.49,16,500,3.2,17.1,0.036,16.4,38.2,1343300.0,NORMAL,NO_CHANGE,CB_1
+2026-10-24T10:59:30.000Z,1792839570.607,run-9311c7,3.05,Z3,5000,5000,36,34,1,2,51,49,2,9,87,83,3,96.51,3.49,38,500,7.6,23.8,0.018,12.4,42.1,2289351.0,NORMAL,NO_CHANGE,CB_3
+2026-10-24T10:59:30.000Z,1792839570.607,run-9311c7,3.05,Z4,5000,5000,36,34,1,4,51,49,2,10,87,83,3,96.51,3.49,42,500,8.4,20.1,0.028,14.3,28.2,1418416.0,NORMAL,RIS_RECONFIGURE,CB_1
+2026-10-24T10:59:30.000Z,1792839570.607,run-9311c7,3.05,Z5,5000,5000,36,34,1,8,51,49,2,10,87,83,3,96.51,3.49,39,500,7.8,24.9,0.024,15.4,44.9,1740869.0,NORMAL,NO_CHANGE,CB_0

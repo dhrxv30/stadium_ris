@@ -1,0 +1,2 @@
+run_id,start_time_iso,end_time_iso,total_duration_s,total_devices,total_senders,total_receivers,ul_generated,ul_delivered,ul_dropped,dl_generated,dl_delivered,dl_dropped,total_generated,total_delivered,total_dropped,final_pdr_pct,final_plr_pct,mean_latency_ms,p95_latency_ms,throughput_bps,oob_unique_commands,oob_acknowledged,oob_timeouts,final_oob_ack_ratio_pct
+run-dde4ba,2026-10-25T02:15:49.000Z,2026-10-25T02:21:26.000Z,337.53,50000,25000,25000,67230,63926,3304,66194,62862,3332,133424,126788,6636,95.03,4.97,15.5,38.0,9425961.0,665,612,53,92.03
