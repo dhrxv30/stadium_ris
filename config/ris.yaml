@@ -1,0 +1,27 @@
+# Virtual PASSIVE RIS panels (simulation only; no physical RIS hardware).
+# NOTE: All channel model outputs are SIMULATED, not real RF measurements.
+panel_count: 32
+zone_panel_counts: [7, 7, 6, 6, 6]   # panels per zone Z1..Z5, must sum to panel_count
+codebook_size: 8                      # number of candidate phase codebook states
+initial_codebook_index: 0             # baseline configuration for every panel
+stale_after_s: 5.0                    # feedback whose window_end is older than this is rejected
+
+# Scheduler: "congestion_aware" | "baseline"
+scheduler: congestion_aware
+
+# Channel model parameters (simulation only; see laptop_b/ris_channel.py for model assumptions)
+freq_hz: 3500000000.0       # 3.5 GHz (example Sub-6GHz band)
+path_loss_exp: 2.5
+ris_elements_per_panel: 64  # N reflecting elements per panel
+noise_figure_db: 7.0
+bandwidth_hz: 20000000.0    # 20 MHz
+
+# Optimizer
+optimizer_cooldown_s: 5.0   # minimum seconds between optimization runs per zone
+optimizer_interval_s: 5.0   # how often the closed-loop engine iterates
+
+# OOB channel parameters (SOFTWARE SIMULATION; not a real Sub-GHz radio link)
+oob_delay_s: 0.05           # one-way simulated OOB delay (seconds)
+oob_loss_prob: 0.05         # probability of simulated OOB message loss
+oob_retry_limit: 3          # max retransmissions per command
+oob_timeout_s: 2.0          # per-attempt timeout

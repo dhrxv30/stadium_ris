@@ -1,0 +1,4 @@
+# Stadium population (logical endpoints, NOT OS processes or sockets).
+zones: [Z1, Z2, Z3, Z4, Z5]
+senders_per_zone: 5000
+receivers_per_zone: 5000
