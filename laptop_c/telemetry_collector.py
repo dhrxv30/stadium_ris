@@ -9,7 +9,7 @@ import time
 from common.constants import LAPTOP_A, LAPTOP_B
 from common.framing import read_frame, FramingError
 from common.messages import decode_message
-from common.validation import validate_message
+from common.validation import validate_telemetry_message
 
 NEVER, CONNECTED, STALE, DISCONNECTED = "NEVER_CONNECTED", "CONNECTED", "STALE", "DISCONNECTED"
 
@@ -189,7 +189,7 @@ class TelemetryCollector:
 
     def process_message(self, expected, msg):
         peer = self.peers[expected]
-        ok, err = validate_message(msg, self.cfg["max_clock_skew_s"])
+        ok, err = validate_telemetry_message(msg, self.cfg["max_clock_skew_s"])
         if not ok:
             peer.rejected_invalid += 1
             self._log("REJECT", expected, f"invalid: {err}")

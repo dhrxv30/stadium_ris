@@ -1,3 +1,0 @@
-timestamp_iso,timestamp_epoch_s,run_id,event_id,source,event_type,pdu_id,zone_id,details
-2026-10-24T11:09:30.000Z,1792840170.939,run-685f2c,PDU-9205,A,PDU_DELIVERY,,Z4,Simulated batch delivery confirmed
-2026-10-24T11:09:32.000Z,1792840172.451,run-685f2c,PDU-3592,A,PDU_DELIVERY,,Z4,Simulated batch delivery confirmed

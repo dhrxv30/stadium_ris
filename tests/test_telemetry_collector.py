@@ -1,7 +1,7 @@
 import asyncio, time, unittest
 from common.config import load_network_config
 from common.framing import encode_frame
-from common.messages import make_message, encode_message
+from common.telemetry_messages import make_message, encode_message
 from laptop_c.telemetry_collector import TelemetryCollector, CONNECTED, STALE, DISCONNECTED, NEVER
 
 

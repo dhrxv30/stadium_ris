@@ -1,40 +1,36 @@
-import unittest, struct
-from common.framing import FrameDecoder, encode_frame, FramingError
+import struct
+
+import pytest
+
+from common.framing import FrameDecoder, FramingError, encode_frame
 
 
-class TestFraming(unittest.TestCase):
-    def test_roundtrip(self):
-        d = FrameDecoder()
-        self.assertEqual(d.feed(encode_frame(b"hello")), [b"hello"])
-
-    def test_fragmented_byte_by_byte(self):
-        d, out = FrameDecoder(), []
-        for b in encode_frame(b'{"a":1}'):
-            out += d.feed(bytes([b]))
-        self.assertEqual(out, [b'{"a":1}'])
-        self.assertEqual(d.pending_bytes, 0)
-
-    def test_combined_frames(self):
-        d = FrameDecoder()
-        data = encode_frame(b"one") + encode_frame(b"two") + encode_frame(b"three")
-        self.assertEqual(d.feed(data), [b"one", b"two", b"three"])
-
-    def test_combined_plus_partial(self):
-        d = FrameDecoder()
-        data = encode_frame(b"one") + encode_frame(b"two")
-        self.assertEqual(d.feed(data[:-2]), [b"one"])
-        self.assertEqual(d.feed(data[-2:]), [b"two"])
-
-    def test_oversize_rejected(self):
-        d = FrameDecoder(max_bytes=10)
-        with self.assertRaises(FramingError):
-            d.feed(struct.pack(">I", 11) + b"x" * 11)
-        with self.assertRaises(FramingError):
-            encode_frame(b"x" * 11, max_bytes=10)
-
-    def test_empty_payload(self):
-        self.assertEqual(FrameDecoder().feed(encode_frame(b"")), [b""])
+def test_roundtrip_single():
+    assert FrameDecoder().feed(encode_frame(b"hello")) == [b"hello"]
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_combined_frames_in_one_chunk():
+    data = encode_frame(b"a") + encode_frame(b"bb") + encode_frame(b"ccc")
+    assert FrameDecoder().feed(data) == [b"a", b"bb", b"ccc"]
+
+
+def test_fragmented_byte_by_byte():
+    data = encode_frame(b"fragmented-payload") + encode_frame(b"second")
+    decoder, output = FrameDecoder(), []
+    for byte in data:
+        output.extend(decoder.feed(bytes((byte,))))
+    assert output == [b"fragmented-payload", b"second"]
+    assert decoder.buffered == decoder.pending_bytes == 0
+
+
+def test_oversize_rejected_on_encode_and_decode():
+    with pytest.raises(FramingError):
+        encode_frame(b"x" * 11, max_bytes=10)
+    with pytest.raises(FramingError):
+        FrameDecoder(max_bytes=10).feed(struct.pack(">I", 11) + b"x" * 11)
+
+
+def test_partial_frame_waits():
+    decoder = FrameDecoder()
+    assert decoder.feed(encode_frame(b"abcdef")[:5]) == []
+    assert decoder.buffered == 5

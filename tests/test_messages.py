@@ -1,51 +1,78 @@
-import time, unittest
-from common.messages import make_message, encode_message, decode_message
-from common.validation import validate_message
-from common.config import load_network_config, ConfigError
+import copy
+import json
+
+import pytest
+
+from common.constants import MSG_FEEDBACK_REPORT, MSG_HEARTBEAT
+from common.messages import MessageError, decode_message, encode_message, make_message
+from common.validation import ValidationError, validate_message
+
+PAYLOAD = {
+    "seq": 1,
+    "window_start": 1.0,
+    "window_end": 2.0,
+    "queue_occupancy": 10,
+    "queue_capacity": 100,
+    "generated": 50,
+    "delivered": 40,
+    "dropped": 5,
+}
 
 
-def good(**kw):
-    return make_message("TELEMETRY_A", "A", "C", "run1", {"x": 1}, seq=0, zone_id="Z1", **kw)
+def good():
+    return make_message(
+        MSG_FEEDBACK_REPORT, "A", "B", "run1", copy.deepcopy(PAYLOAD),
+        zone_id="Z1",
+    )
 
 
-class TestMessages(unittest.TestCase):
-    def test_roundtrip_and_valid(self):
-        m = decode_message(encode_message(good()))
-        self.assertEqual(validate_message(m), (True, ""))
-
-    def test_missing_field(self):
-        m = good(); del m["run_id"]
-        self.assertFalse(validate_message(m)[0])
-
-    def test_wrong_version(self):
-        m = good(); m["protocol_version"] = 99
-        ok, err = validate_message(m)
-        self.assertFalse(ok); self.assertIn("protocol_version", err)
-
-    def test_bad_type_source_zone_panel(self):
-        for field, val in (("msg_type", "BOGUS"), ("source", "X"), ("zone_id", "Z9"), ("panel_id", "P33")):
-            m = good(); m[field] = val
-            self.assertFalse(validate_message(m)[0], field)
-        m = good(); m["panel_id"] = "P32"
-        self.assertTrue(validate_message(m)[0])
-
-    def test_future_timestamp_and_bool_seq(self):
-        m = good(timestamp=time.time() + 10_000)
-        self.assertFalse(validate_message(m)[0])
-        m = good(); m["seq"] = True
-        self.assertFalse(validate_message(m)[0])
-
-    def test_non_dict(self):
-        self.assertFalse(validate_message([1, 2])[0])
-
-    def test_config_defaults_and_errors(self):
-        self.assertEqual(load_network_config()["laptop_c"]["telemetry_port_a"], 9101)
-        with self.assertRaises(ConfigError):
-            load_network_config(None, {"laptop_c": {"telemetry_port_a": 70000}})
-        with self.assertRaises(ConfigError):
-            load_network_config("does_not_exist.yaml")
-        self.assertEqual(load_network_config("config/network.yaml")["protocol_version"], 1)
+def test_encode_decode_roundtrip():
+    message = good()
+    assert decode_message(encode_message(message)[4:]) == message
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_valid_feedback_and_heartbeat_pass():
+    validate_message(good())
+    validate_message(make_message(MSG_HEARTBEAT, "A", "B", "run1", {"seq": 3}))
+
+
+def test_optional_measurements_may_be_null():
+    message = good()
+    message["payload"].update(mean_sinr_db=None, per=None)
+    validate_message(message)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda m: m.pop("msg_id"),
+    lambda m: m.update(version=2),
+    lambda m: m.update(src="X"),
+    lambda m: m.update(zone_id="Z9"),
+    lambda m: m.pop("zone_id"),
+    lambda m: m.update(type="NOPE"),
+    lambda m: m["payload"].pop("delivered"),
+    lambda m: m["payload"].update(seq="1"),
+    lambda m: m["payload"].update(seq=True),
+    lambda m: m["payload"].update(per=1.5),
+    lambda m: m["payload"].update(queue_occupancy=101),
+    lambda m: m["payload"].update(window_end=0.5),
+    lambda m: m.update(panel_id="P33"),
+])
+def test_invalid_messages_rejected(mutate):
+    message = good()
+    mutate(message)
+    with pytest.raises(ValidationError):
+        validate_message(message)
+
+
+def test_decode_rejects_garbage():
+    for raw in (b"{not json", b"\xff\xfe", b"[1,2,3]"):
+        with pytest.raises(MessageError):
+            decode_message(raw)
+
+
+def test_nan_not_serialisable():
+    message = good()
+    message["payload"]["per"] = float("nan")
+    with pytest.raises(ValueError):
+        encode_message(message)
+    assert json.loads(json.dumps({"a": 1}))

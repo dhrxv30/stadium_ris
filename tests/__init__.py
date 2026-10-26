@@ -1,0 +1,1 @@
+"""Automated tests for the Laptop A/B/C simulation."""

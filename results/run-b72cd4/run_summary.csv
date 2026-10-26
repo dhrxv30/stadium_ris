@@ -1,2 +1,0 @@
-run_id,start_time_iso,end_time_iso,total_duration_s,total_devices,total_senders,total_receivers,ul_generated,ul_delivered,ul_dropped,dl_generated,dl_delivered,dl_dropped,total_generated,total_delivered,total_dropped,final_pdr_pct,final_plr_pct,mean_latency_ms,p95_latency_ms,throughput_bps,oob_unique_commands,oob_acknowledged,oob_timeouts,final_oob_ack_ratio_pct
-run-b72cd4,2026-10-25T03:46:25.000Z,2026-10-25T03:47:04.000Z,38.68,50000,25000,25000,8034,7644,390,7692,7313,379,15726,14957,769,95.11,4.89,14.6,41.6,9035951.0,76,72,4,94.74

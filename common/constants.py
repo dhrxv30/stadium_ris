@@ -1,18 +1,23 @@
-"""Shared constants. Single source of truth for A, B and C."""
+"""Shared constants for Laptop A, B and C."""
+
 PROTOCOL_VERSION = 1
-MAX_MESSAGE_BYTES_DEFAULT = 1_048_576
-LENGTH_PREFIX_BYTES = 4            # big-endian unsigned 32-bit length prefix
+NODES = ("A", "B", "C")
+LAPTOP_A, LAPTOP_B, LAPTOP_C = NODES
+MODULES = NODES
+ZONE_IDS = ["Z1", "Z2", "Z3", "Z4", "Z5"]
+NUM_ZONES = len(ZONE_IDS)
+PANEL_COUNT = 32
+NUM_PANELS = PANEL_COUNT
+DEFAULT_MAX_MESSAGE_BYTES = 1_048_576
+MAX_MESSAGE_BYTES_DEFAULT = DEFAULT_MAX_MESSAGE_BYTES
+LENGTH_PREFIX_BYTES = 4
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
-# Module names (used as `source` / `destination`)
-LAPTOP_A, LAPTOP_B, LAPTOP_C = "A", "B", "C"
-MODULES = (LAPTOP_A, LAPTOP_B, LAPTOP_C)
-
-# Message types
 MSG_HELLO = "HELLO"
 MSG_HEARTBEAT = "HEARTBEAT"
-MSG_TELEMETRY_A = "TELEMETRY_A"      # Laptop A PDU/zone statistics
-MSG_TELEMETRY_B = "TELEMETRY_B"      # Laptop B decisions/panel/OOB statistics
-MSG_EVENT = "EVENT"                  # discrete event (PDU, OOB, decision...)
+MSG_TELEMETRY_A = "TELEMETRY_A"
+MSG_TELEMETRY_B = "TELEMETRY_B"
+MSG_EVENT = "EVENT"
 MSG_ERROR = "ERROR"
 MSG_FEEDBACK_REPORT = "FEEDBACK_REPORT"
 MSG_RIS_COMMAND = "RIS_COMMAND"
@@ -28,7 +33,3 @@ MESSAGE_TYPES = (
     MSG_RIS_ACK, MSG_TELEMETRY_EVENT, MSG_CONTROLLER_STATE,
     MSG_TELEMETRY_UPDATE, MSG_LAPTOP_A_INIT
 )
-
-NUM_ZONES = 5
-NUM_PANELS = 32
-ZONE_IDS = tuple(f"Z{i}" for i in range(1, NUM_ZONES + 1))

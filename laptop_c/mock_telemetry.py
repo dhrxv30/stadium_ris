@@ -20,7 +20,7 @@ from common.constants import (
     ZONE_IDS,
 )
 from common.framing import encode_frame
-from common.messages import encode_message, make_message
+from common.telemetry_messages import encode_message, make_message
 from common.schemas import make_default_device_population, make_default_panel_catalog
 
 
