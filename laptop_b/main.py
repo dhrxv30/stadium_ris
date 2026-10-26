@@ -54,7 +54,7 @@ async def status_loop(ctrl, interval):
 async def publish_telemetry_to_c(ctrl, network, stop):
     """Reconnect to Laptop C and publish the latest controller state."""
     host = network["laptop_c"]["host"]
-    port = network["laptop_c"]["telemetry_port_b"]
+    port = network["laptop_c"].get("telemetry_port_b") or network["laptop_c"].get("port", 9003)
     max_bytes = network["max_message_bytes"]
     interval = 0.5
     seq = 0
@@ -141,7 +141,7 @@ async def amain(args) -> int:
             pass  # Windows: Ctrl+C handled via KeyboardInterrupt
 
     net_b = cfg["network"]["laptop_b"]
-    host = "127.0.0.1" if args.mode == "mock" and not args.host else net_b["host"]
+    host = "127.0.0.1" if args.mode == "mock" and not args.host else (args.host or net_b.get("bind_host") or "0.0.0.0")
     listen_port = (args.port or 0) if args.mode == "mock" else net_b["port"]
     port = await ctrl.start(host, listen_port)
     status_task = asyncio.create_task(status_loop(ctrl, run["status_interval_s"]))

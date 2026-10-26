@@ -35,10 +35,11 @@ from laptop_c.visualization.stadium_3d import Stadium3DVisualizer
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Laptop C Supervisor - Full System (Stages C1 - C5)")
-    p.add_argument("--config", default=None, help="path to network.yaml (defaults used if omitted)")
+    p.add_argument("--config", default="config/network.yaml", help="path to network.yaml (default: config/network.yaml)")
     p.add_argument("--bind", default=None, help="override laptop_c.bind_host")
-    p.add_argument("--port-a", type=int, default=None, help="override telemetry port for A (default 9101)")
-    p.add_argument("--port-b", type=int, default=None, help="override telemetry port for B (default 9102)")
+    p.add_argument("--port", type=int, default=None, help="override unified telemetry port for both A and B (default: 9003)")
+    p.add_argument("--port-a", type=int, default=None, help="override telemetry port for A (default 9003)")
+    p.add_argument("--port-b", type=int, default=None, help="override telemetry port for B (default 9003)")
     p.add_argument("--run-id", default=None, help="expected run ID (else adopted from first message)")
     p.add_argument("--duration", type=float, default=None, help="auto-exit after N seconds")
     p.add_argument("--summary-interval", type=float, default=1.0, help="refresh interval in seconds")
@@ -76,6 +77,10 @@ def build_overrides(a):
     ov = {"laptop_c": {}}
     if a.bind:
         ov["laptop_c"]["bind_host"] = a.bind
+    if a.port is not None:
+        ov["laptop_c"]["telemetry_port_a"] = a.port
+        ov["laptop_c"]["telemetry_port_b"] = a.port
+        ov["laptop_c"]["port"] = a.port
     if a.port_a is not None:
         ov["laptop_c"]["telemetry_port_a"] = a.port_a
     if a.port_b is not None:

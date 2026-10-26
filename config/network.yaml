@@ -3,9 +3,11 @@ protocol_version: 1
 laptop_a:
   host: "192.168.1.54"
   port: 9001
+  bind_host: "0.0.0.0"
 laptop_b:
   host: "192.168.1.39"
   port: 9002
+  bind_host: "0.0.0.0"
 laptop_c:
   host: "192.168.1.42"
   port: 9003

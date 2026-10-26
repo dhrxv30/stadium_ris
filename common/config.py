@@ -4,9 +4,9 @@ import yaml
 
 DEFAULTS = {
     "protocol_version": 1,
-    "laptop_c": {"bind_host": "127.0.0.1", "telemetry_port_a": 9101, "telemetry_port_b": 9102},
-    "laptop_a": {"host": "127.0.0.1"},
-    "laptop_b": {"host": "127.0.0.1"},
+    "laptop_c": {"bind_host": "0.0.0.0", "telemetry_port_a": 9003, "telemetry_port_b": 9003},
+    "laptop_a": {"host": "127.0.0.1", "port": 9001},
+    "laptop_b": {"host": "127.0.0.1", "port": 9002},
     "limits": {"max_message_bytes": 1_048_576, "read_timeout_s": 30.0},
     "stale_after_s": 5.0,
     "dedupe_window": 10000,

@@ -129,10 +129,10 @@ class LaptopASystem:
         feedback_interval_sec: float = 1.0,
         lap_b_ip: str = "127.0.0.1",
         lap_c_ip: str = "127.0.0.1",
-        lap_c_telemetry_port: int = 9101,
+        lap_c_telemetry_port: int = 9003,
         lap_b_data_port: int = 0,
         lap_b_oob_port: int = 9002,
-        telemetry_port: int = 9003,
+        telemetry_port: int = 9001,
         enable_mobility: bool = False,
         export_dir: str = "./results",
         show_dashboard: bool = True,
@@ -1160,8 +1160,8 @@ def main(argv=None):
     parser.add_argument(
         "--telemetry-port",
         type=int,
-        default=9003,
-        help="TCP port to listen for Laptop C supervisory connections. Default: 9003",
+        default=None,
+        help="TCP port to listen for Laptop C supervisory connections (default: network.yaml laptop_a.port or 9001)",
     )
     parser.add_argument(
         "--mobility",
@@ -1228,17 +1228,25 @@ def main(argv=None):
     log_level = args.log_level or run_config["log_level"]
     export_dir = args.export_dir or os.path.join(PROJECT_ROOT, run_config["output_dir"])
     run_id = args.run_id or f"RUN_{time.strftime('%Y%m%d_%H%M%S')}_S{seed}"
-    lap_b_ip = args.lap_b_ip or "127.0.0.1"
+    lap_b_ip = args.lap_b_ip or config["network"]["laptop_b"]["host"]
     lap_c_ip = args.lap_c_ip or config["network"]["laptop_c"]["host"]
     lap_c_telemetry_port = (
         args.lap_c_telemetry_port
         if args.lap_c_telemetry_port is not None
-        else config["network"]["laptop_c"]["telemetry_port_a"]
+        else (
+            config["network"]["laptop_c"].get("telemetry_port_a")
+            or config["network"]["laptop_c"].get("port", 9003)
+        )
     )
     lap_b_oob_port = (
         args.lap_b_oob_port
         if args.lap_b_oob_port is not None
         else config["network"]["laptop_b"]["port"]
+    )
+    telemetry_port = (
+        args.telemetry_port
+        if args.telemetry_port is not None
+        else config["network"]["laptop_a"]["port"]
     )
 
     if num_zones < 1 or num_zones > len(DEFAULT_ZONE_GEOMETRIES):
@@ -1293,7 +1301,7 @@ def main(argv=None):
             lap_c_telemetry_port=lap_c_telemetry_port,
             lap_b_data_port=args.lap_b_data_port,
             lap_b_oob_port=lap_b_oob_port,
-            telemetry_port=args.telemetry_port,
+            telemetry_port=telemetry_port,
             enable_mobility=args.mobility,
             export_dir=export_dir,
             show_dashboard=not args.no_dashboard,
