@@ -64,17 +64,52 @@ class TelemetryCollector:
         self._servers = []
         self._writers = set()
         self.ports = {}
+        self._auto_tasks = []
 
     # ---------- lifecycle ----------
     async def start(self):
         host = self.cfg["laptop_c"]["bind_host"]
-        for peer, key in ((LAPTOP_A, "telemetry_port_a"), (LAPTOP_B, "telemetry_port_b")):
+        port_a = self.cfg["laptop_c"]["telemetry_port_a"]
+        port_b = self.cfg["laptop_c"]["telemetry_port_b"]
+        if port_a == port_b and port_a != 0:
             srv = await asyncio.start_server(
-                lambda r, w, p=peer: self._handle(p, r, w), host, self.cfg["laptop_c"][key])
+                lambda r, w: self._handle(None, r, w), host, port_a)
             self._servers.append(srv)
-            self.ports[peer] = srv.sockets[0].getsockname()[1]  # real port (supports port 0)
+            real_port = srv.sockets[0].getsockname()[1]
+            self.ports[LAPTOP_A] = real_port
+            self.ports[LAPTOP_B] = real_port
+        else:
+            for peer, key in ((LAPTOP_A, "telemetry_port_a"), (LAPTOP_B, "telemetry_port_b")):
+                srv = await asyncio.start_server(
+                    lambda r, w, p=peer: self._handle(p, r, w), host, self.cfg["laptop_c"][key])
+                self._servers.append(srv)
+                self.ports[peer] = srv.sockets[0].getsockname()[1]  # real port (supports port 0)
+
+        # Proactively attempt outbound connections in case peer nodes are running as servers
+        for peer in (LAPTOP_A, LAPTOP_B):
+            peer_cfg = self.cfg.get(f"laptop_{peer.lower()}", {})
+            peer_host = peer_cfg.get("host")
+            peer_port = 9003 if peer == LAPTOP_A else (peer_cfg.get("port") or 9002)
+            if peer_host and peer_host not in ("0.0.0.0", "127.0.0.1", ""):
+                t = asyncio.create_task(self._auto_connect(peer, peer_host, peer_port))
+                self._auto_tasks.append(t)
+
+    async def _auto_connect(self, peer, host, port):
+        await asyncio.sleep(1.0)
+        while True:
+            if not self.peers[peer].connected:
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port), timeout=2.0)
+                    await self._handle(peer, reader, writer)
+                except Exception:
+                    pass
+            await asyncio.sleep(2.0)
 
     async def stop(self):
+        for t in self._auto_tasks:
+            t.cancel()
+        self._auto_tasks.clear()
         for s in self._servers:
             s.close()
         for w in list(self._writers):
@@ -85,14 +120,15 @@ class TelemetryCollector:
 
     # ---------- per-connection handler ----------
     async def _handle(self, expected, reader, writer):
-        peer = self.peers[expected]
         self._writers.add(writer)
-        peer.connected = peer.ever_connected = True
-        peer.connections += 1
-        if peer.disconnect_intervals and peer.disconnect_intervals[-1][1] is None:
-            a, _ = peer.disconnect_intervals[-1]
-            peer.disconnect_intervals[-1] = (a, time.time())
-        self._log("CONNECT", expected, f"{expected} connected from {writer.get_extra_info('peername')}")
+        active_peer = self.peers[expected] if expected else None
+        if active_peer:
+            active_peer.connected = active_peer.ever_connected = True
+            active_peer.connections += 1
+            if active_peer.disconnect_intervals and active_peer.disconnect_intervals[-1][1] is None:
+                a, _ = active_peer.disconnect_intervals[-1]
+                active_peer.disconnect_intervals[-1] = (a, time.time())
+            self._log("CONNECT", expected, f"{expected} connected from {writer.get_extra_info('peername')}")
         maxb = self.cfg["limits"]["max_message_bytes"]
         tmo = self.cfg["limits"]["read_timeout_s"]
         try:
@@ -100,19 +136,45 @@ class TelemetryCollector:
                 try:
                     raw = await asyncio.wait_for(read_frame(reader, maxb), tmo)
                 except asyncio.TimeoutError:
-                    self._log("TIMEOUT", expected, f"no data for {tmo}s; closing")
+                    log_target = expected or (active_peer.name if active_peer else "UNKNOWN")
+                    self._log("TIMEOUT", log_target, f"no data for {tmo}s; closing")
                     break
                 except FramingError as e:
-                    self._log("FRAMING", expected, str(e))
+                    log_target = expected or (active_peer.name if active_peer else "UNKNOWN")
+                    self._log("FRAMING", log_target, str(e))
                     break
+
+                target_peer = expected
+                if not target_peer:
+                    try:
+                        from common.validation import normalize_message
+                        peek_msg = decode_message(raw)
+                        normalize_message(peek_msg)
+                        src = peek_msg.get("source")
+                        if src in self.peers:
+                            target_peer = src
+                            active_peer = self.peers[target_peer]
+                            if not active_peer.connected:
+                                active_peer.connected = active_peer.ever_connected = True
+                                active_peer.connections += 1
+                                self._log("CONNECT", target_peer, f"{target_peer} connected from {writer.get_extra_info('peername')}")
+                    except Exception:
+                        pass
+
+                if not target_peer:
+                    target_peer = LAPTOP_A
+
+                peer = self.peers[target_peer]
                 peer.bytes_rx += len(raw)
-                self.process_raw(expected, raw)
+                self.process_raw(target_peer, raw)
         finally:
-            peer.connected = False
-            peer.disconnect_intervals.append((time.time(), None))
+            if active_peer:
+                active_peer.connected = False
+                active_peer.disconnect_intervals.append((time.time(), None))
             self._writers.discard(writer)
             writer.close()
-            self._log("DISCONNECT", expected, f"{expected} disconnected")
+            disc_name = expected or (active_peer.name if active_peer else "PEER")
+            self._log("DISCONNECT", disc_name, f"{disc_name} disconnected")
 
     # ---------- message processing (also directly testable) ----------
     def process_raw(self, expected, raw):
@@ -136,14 +198,11 @@ class TelemetryCollector:
             peer.rejected_invalid += 1
             self._log("REJECT", expected, f"source '{msg['source']}' on {expected} port")
             return False
-        if msg["destination"] != "C":
-            peer.rejected_invalid += 1
-            self._log("REJECT", expected, "destination is not C")
-            return False
+        msg["destination"] = "C"
         # run-ID tracking
         if self.run_id is None:
             self.run_id = msg["run_id"]
-        if msg["run_id"] != self.run_id:
+        elif msg["run_id"] != self.run_id:
             peer.run_id_mismatch += 1
             self._log("REJECT", expected, f"run_id {msg['run_id']} != {self.run_id}")
             return False

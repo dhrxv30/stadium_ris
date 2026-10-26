@@ -168,14 +168,31 @@ class ZoneState:
             self.queue_occupancy = safe_int(data["queue_occupancy"])
         elif "queue" in data and data["queue"] is not None:  # fallback for simple mock payloads
             self.queue_occupancy = safe_int(data["queue"])
+        elif "queue_ul" in data or "queue_dl" in data:
+            self.queue_occupancy = safe_int(data.get("queue_ul", 0)) + safe_int(data.get("queue_dl", 0))
+            if not self.queue_capacity:
+                self.queue_capacity = 1000
 
         if "queue_capacity" in data and data["queue_capacity"] is not None:
             self.queue_capacity = safe_int(data["queue_capacity"])
+
+        if "generated" in data and "generated_dl" not in data:
+            self.generated_dl = safe_int(data["generated"])
+        if "delivered" in data and "delivered_dl" not in data:
+            self.delivered_dl = safe_int(data["delivered"])
+        if "dropped" in data and "dropped_dl" not in data:
+            self.dropped_dl = safe_int(data["dropped"])
+
+        if "latency" in data and isinstance(data["latency"], dict):
+            self.mean_latency_ms = safe_float(data["latency"].get("mean_ms"), self.mean_latency_ms)
+            self.p95_latency_ms = safe_float(data["latency"].get("p95_ms"), self.p95_latency_ms)
 
         if "sinr_db" in data and data["sinr_db"] is not None:
             self.sinr_db = safe_float(data["sinr_db"])
         if "estimated_per" in data and data["estimated_per"] is not None:
             self.estimated_per = safe_float(data["estimated_per"])
+        elif "per" in data and data["per"] is not None:
+            self.estimated_per = safe_float(data["per"])
         if "mean_latency_ms" in data and data["mean_latency_ms"] is not None:
             self.mean_latency_ms = safe_float(data["mean_latency_ms"])
         if "p95_latency_ms" in data and data["p95_latency_ms"] is not None:
@@ -503,11 +520,16 @@ class Supervisor:
         if self.run_id is None and run_id:
             self.run_id = run_id
 
-        if mtype == MSG_TELEMETRY_A:
+        from common.constants import (
+            MSG_TELEMETRY_A, MSG_TELEMETRY_B, MSG_EVENT,
+            MSG_FEEDBACK_REPORT, MSG_RIS_COMMAND, MSG_RIS_ACK,
+            MSG_TELEMETRY_EVENT, MSG_CONTROLLER_STATE, MSG_TELEMETRY_UPDATE
+        )
+        if mtype in (MSG_TELEMETRY_A, MSG_FEEDBACK_REPORT, MSG_TELEMETRY_UPDATE):
             self.process_telemetry_a(payload, ts, msg.get("zone_id"))
-        elif mtype == MSG_TELEMETRY_B:
+        elif mtype in (MSG_TELEMETRY_B, MSG_CONTROLLER_STATE):
             self.process_telemetry_b(payload, ts, msg.get("zone_id"), msg.get("panel_id"))
-        elif mtype == MSG_EVENT:
+        elif mtype in (MSG_EVENT, MSG_TELEMETRY_EVENT, MSG_RIS_COMMAND, MSG_RIS_ACK):
             self.process_event(payload, ts, expected_source, msg.get("zone_id"), msg.get("panel_id"))
 
     def process_telemetry_a(self, payload: dict, ts: float, zone_id: Optional[str] = None):
@@ -530,7 +552,28 @@ class Supervisor:
                         self.zones[zid].receivers = safe_int(zinfo.get("receivers"), self.zones[zid].receivers)
 
         # 2. Traffic summary update
-        if "traffic_summary" in payload and isinstance(payload["traffic_summary"], dict):
+        if "snapshot" in payload and isinstance(payload["snapshot"], dict):
+            snap = payload["snapshot"]
+            if "global" in snap and isinstance(snap["global"], dict):
+                g = snap["global"]
+                self.dl_generated = safe_int(g.get("pdu_generated"), self.dl_generated)
+                self.dl_delivered = safe_int(g.get("pdu_delivered"), self.dl_delivered)
+                self.dl_dropped = safe_int(g.get("pdu_dropped"), self.dl_dropped)
+                self.dl_pending = safe_int(g.get("pdu_pending"), self.dl_pending)
+                if "throughput_bps" in g:
+                    self.overall_throughput_bps = safe_float(g["throughput_bps"])
+                if "latency" in g and isinstance(g["latency"], dict):
+                    self.overall_mean_latency_ms = safe_float(g["latency"].get("mean_ms"))
+                    self.overall_p95_latency_ms = safe_float(g["latency"].get("p95_ms"))
+            if "zones" in snap and isinstance(snap["zones"], dict):
+                for zid, zdata in snap["zones"].items():
+                    if zid in self.zones and isinstance(zdata, dict):
+                        self.zones[zid].update_from_a(zdata, ts)
+            if "oob" in snap and isinstance(snap["oob"], dict):
+                o = snap["oob"]
+                self.oob.total_tx_attempts = safe_int(o.get("feedback_reports_sent"), self.oob.total_tx_attempts)
+                self.oob.acked = safe_int(o.get("ris_updates_received"), self.oob.acked)
+        elif "traffic_summary" in payload and isinstance(payload["traffic_summary"], dict):
             tsum = payload["traffic_summary"]
             if "uplink" in tsum and isinstance(tsum["uplink"], dict):
                 ul = tsum["uplink"]

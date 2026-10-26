@@ -263,7 +263,10 @@ async def amain(args):
 
 
 def main(argv=None):
-    return asyncio.run(amain(parse_args(argv)))
+    try:
+        return asyncio.run(amain(parse_args(argv)))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":

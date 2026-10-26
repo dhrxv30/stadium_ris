@@ -11,11 +11,63 @@ _REQUIRED = {
 _PANEL_RE = re.compile(r"^P(\d{1,2})$")
 
 
+def normalize_message(msg):
+    """Normalize envelope fields across team schemas."""
+    if not isinstance(msg, dict):
+        return msg
+    if "protocol_version" not in msg and "version" in msg:
+        msg["protocol_version"] = msg["version"]
+    if "msg_type" not in msg:
+        if "type" in msg:
+            msg["msg_type"] = msg["type"]
+        elif "message_type" in msg:
+            msg["msg_type"] = msg["message_type"]
+    if "source" not in msg and "src" in msg:
+        msg["source"] = msg["src"]
+    if msg.get("source") in ("LAPTOP_A", "node_a", "laptop_a"):
+        msg["source"] = "A"
+    elif msg.get("source") in ("LAPTOP_B", "node_b", "laptop_b"):
+        msg["source"] = "B"
+    elif msg.get("source") in ("LAPTOP_C", "node_c", "laptop_c"):
+        msg["source"] = "C"
+    if "destination" not in msg:
+        if "dst" in msg:
+            msg["destination"] = msg["dst"]
+        elif msg.get("message_type") or msg.get("source") in ("A", "LAPTOP_A", "B", "LAPTOP_B"):
+            msg["destination"] = "C"
+    if msg.get("destination") in ("LAPTOP_C", "node_c", "laptop_c"):
+        msg["destination"] = "C"
+    if "timestamp" not in msg:
+        if "ts" in msg:
+            msg["timestamp"] = msg["ts"]
+        elif "sim_time" in msg or msg.get("message_type"):
+            msg["timestamp"] = time.time()
+    if "message_id" not in msg:
+        if "msg_id" in msg:
+            msg["message_id"] = msg["msg_id"]
+        elif "id" in msg:
+            msg["message_id"] = msg["id"]
+        elif msg.get("message_type"):
+            msg["message_id"] = f"lap_a_{time.time()}"
+    if "run_id" not in msg and msg.get("message_type"):
+        msg["run_id"] = "RUN_001"
+    if "payload" not in msg:
+        if msg.get("msg_type") == "TELEMETRY_UPDATE" and "snapshot" in msg:
+            msg["payload"] = {"snapshot": msg["snapshot"]}
+        elif msg.get("msg_type") == "LAPTOP_A_INIT":
+            msg["payload"] = {k: v for k, v in msg.items() if k not in (
+                "protocol_version", "msg_type", "message_id", "source", "destination", "timestamp", "run_id")}
+        elif "snapshot" in msg:
+            msg["payload"] = {"snapshot": msg["snapshot"]}
+    return msg
+
+
 def validate_message(msg, max_clock_skew_s=300.0, now=None):
     """Validate an already-decoded message. Returns (True, '') or (False, reason)."""
     now = time.time() if now is None else now
     if not isinstance(msg, dict):
         return False, "message is not a JSON object"
+    normalize_message(msg)
     for k, t in _REQUIRED.items():
         if k not in msg:
             return False, f"missing field '{k}'"

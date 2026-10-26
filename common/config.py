@@ -34,11 +34,9 @@ def validate_network_config(cfg):
     if cfg["protocol_version"] != PROTOCOL_VERSION:
         errs.append(f"protocol_version {cfg['protocol_version']} != {PROTOCOL_VERSION}")
     for key in ("telemetry_port_a", "telemetry_port_b"):
-        p = cfg["laptop_c"][key]
+        p = cfg["laptop_c"].get(key)
         if not isinstance(p, int) or not (0 <= p <= 65535):
             errs.append(f"laptop_c.{key} must be int 0-65535 (got {p!r})")
-    if cfg["laptop_c"]["telemetry_port_a"] == cfg["laptop_c"]["telemetry_port_b"] != 0:
-        errs.append("telemetry_port_a and telemetry_port_b must differ")
     if cfg["limits"]["max_message_bytes"] < 1024:
         errs.append("limits.max_message_bytes must be >= 1024")
     for key in ("stale_after_s", "max_clock_skew_s"):
@@ -66,6 +64,20 @@ def load_network_config(path=None, overrides=None):
             raise ConfigError(f"invalid YAML in {path}: {e}")
         if not isinstance(data, dict):
             raise ConfigError("top-level YAML must be a mapping")
+
+    # Map team schema to internal config format
+    if "laptop_c" in data and isinstance(data["laptop_c"], dict):
+        lc = data["laptop_c"]
+        if "port" in lc and "telemetry_port_a" not in lc:
+            lc["telemetry_port_a"] = lc["port"]
+            lc["telemetry_port_b"] = lc["port"]
+        if "host" in lc and "bind_host" not in lc:
+            lc["bind_host"] = lc["host"]
+    if "max_message_bytes" in data:
+        data.setdefault("limits", {})["max_message_bytes"] = data["max_message_bytes"]
+    if "idle_timeout_s" in data:
+        data.setdefault("limits", {})["read_timeout_s"] = data["idle_timeout_s"]
+
     cfg = _merge(DEFAULTS, data)
     cfg = _merge(cfg, overrides)
     return validate_network_config(cfg)
