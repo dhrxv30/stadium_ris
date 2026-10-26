@@ -1,9 +1,10 @@
-"""Message construction, encoding and decoding (JSON over length-prefixed frames)."""
+"""Laptop A/B message construction and JSON encoding."""
+
 import json
 import time
 import uuid
 
-from common.constants import PROTOCOL_VERSION, DEFAULT_MAX_MESSAGE_BYTES
+from common.constants import DEFAULT_MAX_MESSAGE_BYTES, PROTOCOL_VERSION
 from common.framing import encode_frame
 
 
@@ -11,9 +12,21 @@ class MessageError(ValueError):
     """Raised when raw bytes cannot be decoded into a JSON object."""
 
 
-def make_message(msg_type, src, dst, run_id, payload, *, zone_id=None, panel_id=None,
-                 correlation_id=None, ts=None, msg_id=None, version=PROTOCOL_VERSION):
-    msg = {
+def make_message(
+    msg_type,
+    src,
+    dst,
+    run_id,
+    payload,
+    *,
+    zone_id=None,
+    panel_id=None,
+    correlation_id=None,
+    ts=None,
+    msg_id=None,
+    version=PROTOCOL_VERSION,
+):
+    message = {
         "version": version,
         "type": msg_type,
         "msg_id": msg_id or uuid.uuid4().hex,
@@ -24,18 +37,29 @@ def make_message(msg_type, src, dst, run_id, payload, *, zone_id=None, panel_id=
         "payload": payload,
     }
     if zone_id is not None:
-        msg["zone_id"] = zone_id
+        message["zone_id"] = zone_id
     if panel_id is not None:
-        msg["panel_id"] = panel_id
+        message["panel_id"] = panel_id
     if correlation_id is not None:
-        msg["correlation_id"] = correlation_id
-    return msg
+        message["correlation_id"] = correlation_id
+    return message
 
 
-def encode_message(msg: dict, max_bytes: int = DEFAULT_MAX_MESSAGE_BYTES) -> bytes:
-    """Serialise to a complete frame ready for writer.write()."""
-    raw = json.dumps(msg, separators=(",", ":"), allow_nan=False).encode("utf-8")
+def encode_message(
+    message: dict, max_bytes: int = DEFAULT_MAX_MESSAGE_BYTES
+) -> bytes:
+    """Serialize a complete framed message for a TCP writer."""
+    raw = json.dumps(
+        message, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
     return encode_frame(raw, max_bytes)
+
+
+def encode_json_message(message: dict) -> bytes:
+    """Serialize an unframed JSON payload for callers that frame separately."""
+    return json.dumps(
+        message, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
 
 
 def decode_message(raw: bytes) -> dict:

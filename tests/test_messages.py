@@ -7,18 +7,28 @@ from common.constants import MSG_FEEDBACK_REPORT, MSG_HEARTBEAT
 from common.messages import MessageError, decode_message, encode_message, make_message
 from common.validation import ValidationError, validate_message
 
-PAYLOAD = {"seq": 1, "window_start": 1.0, "window_end": 2.0, "queue_occupancy": 10,
-           "queue_capacity": 100, "generated": 50, "delivered": 40, "dropped": 5}
+PAYLOAD = {
+    "seq": 1,
+    "window_start": 1.0,
+    "window_end": 2.0,
+    "queue_occupancy": 10,
+    "queue_capacity": 100,
+    "generated": 50,
+    "delivered": 40,
+    "dropped": 5,
+}
 
 
 def good():
-    return make_message(MSG_FEEDBACK_REPORT, "A", "B", "run1", copy.deepcopy(PAYLOAD), zone_id="Z1")
+    return make_message(
+        MSG_FEEDBACK_REPORT, "A", "B", "run1", copy.deepcopy(PAYLOAD),
+        zone_id="Z1",
+    )
 
 
 def test_encode_decode_roundtrip():
-    msg = good()
-    raw = encode_message(msg)[4:]            # strip frame header
-    assert decode_message(raw) == msg
+    message = good()
+    assert decode_message(encode_message(message)[4:]) == message
 
 
 def test_valid_feedback_and_heartbeat_pass():
@@ -27,9 +37,9 @@ def test_valid_feedback_and_heartbeat_pass():
 
 
 def test_optional_measurements_may_be_null():
-    m = good()
-    m["payload"].update(mean_sinr_db=None, per=None)
-    validate_message(m)
+    message = good()
+    message["payload"].update(mean_sinr_db=None, per=None)
+    validate_message(message)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -48,10 +58,10 @@ def test_optional_measurements_may_be_null():
     lambda m: m.update(panel_id="P33"),
 ])
 def test_invalid_messages_rejected(mutate):
-    m = good()
-    mutate(m)
+    message = good()
+    mutate(message)
     with pytest.raises(ValidationError):
-        validate_message(m)
+        validate_message(message)
 
 
 def test_decode_rejects_garbage():
@@ -61,8 +71,8 @@ def test_decode_rejects_garbage():
 
 
 def test_nan_not_serialisable():
-    m = good()
-    m["payload"]["per"] = float("nan")
+    message = good()
+    message["payload"]["per"] = float("nan")
     with pytest.raises(ValueError):
-        encode_message(m)
+        encode_message(message)
     assert json.loads(json.dumps({"a": 1}))

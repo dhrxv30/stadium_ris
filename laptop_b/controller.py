@@ -115,6 +115,7 @@ class ControllerB:
         self._conns = {}
         self._server = None
         self._start_ts = clock()
+        self.telemetry_c_connected = False
 
     # ---------------------------------------------------------------- OOB callbacks
 
@@ -286,7 +287,8 @@ class ControllerB:
 
         return "\n".join([
             f"[LAPTOP B] RUN={self.run_id} ELAPSED={elapsed:.1f}s",
-            f"Laptop A link={self.link_status('A')} | Laptop C link=N/A (telemetry: C-stage)",
+            f"Laptop A link={self.link_status('A')} | "
+            f"Laptop C telemetry={'CONNECTED' if self.telemetry_c_connected else 'DISCONNECTED'}",
             f"Feedback received={s['feedback_received']} accepted={s['feedback_accepted']} | "
             f"Stale/rejected={s['rejected']} | Malformed={s['malformed']} | "
             f"Framing errors={s['framing_errors']}",
@@ -299,3 +301,64 @@ class ControllerB:
             "CLOSED-LOOP (simulated):",
             *cl_lines,
         ])
+
+    def telemetry_payload(self) -> dict:
+        """Return the controller and RIS state published to Laptop C."""
+        latest = self.oob.history[-1] if self.oob.history else None
+        last_decision = None
+        if latest is not None:
+            last_decision = {
+                "timestamp": latest.created_ts,
+                "decision": "RIS_RECONFIGURE",
+                "reason": latest.reason,
+                "zone_id": latest.zone_id,
+                "panel_id": latest.target_panel_id,
+                "config": f"CB_{latest.codebook_index}",
+            }
+
+        zones = {}
+        for zone_id, zone in self.zones.zones.items():
+            zones[zone_id] = {
+                "congestion_state": zone.congestion_state,
+                "queue_occupancy": zone.queue_occupancy,
+                "queue_capacity": zone.queue_capacity,
+                "sinr_db": zone.mean_sinr_db,
+                "per": zone.per,
+                "pdr": zone.pdr,
+                "last_decision": zone.last_decision,
+                "last_ris_update": zone.last_ris_update,
+            }
+
+        panels = []
+        for panel in self.panels.panels.values():
+            status = panel.command_status
+            if status == "ACKED":
+                status = "APPLIED"
+            panels.append({
+                "panel_id": panel.panel_id,
+                "zone_id": panel.zone_id,
+                "current_config": (
+                    f"CB_{panel.codebook_index}"
+                    if panel.codebook_index is not None else None
+                ),
+                "config_version": panel.config_version,
+                "last_update_ts": panel.last_update_ts,
+                "command_status": status,
+                "health_state": panel.health,
+            })
+
+        oob_metrics = dict(self.oob.stats)
+        oob_metrics.update({
+            "unique_commands": self.oob.stats.get("commands_issued", 0),
+            "acknowledged_commands": self.oob.stats.get("commands_acked", 0),
+            "timeouts": self.oob.stats.get("timeouts", 0),
+        })
+        return {
+            "controller_status": {
+                "active_policy": getattr(self.scheduler, "NAME", "UNKNOWN"),
+                "last_decision": last_decision,
+            },
+            "zones": zones,
+            "ris_panels": panels,
+            "oob_metrics": oob_metrics,
+        }

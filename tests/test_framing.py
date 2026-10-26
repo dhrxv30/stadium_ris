@@ -1,3 +1,5 @@
+import struct
+
 import pytest
 
 from common.framing import FrameDecoder, FramingError, encode_frame
@@ -14,22 +16,21 @@ def test_combined_frames_in_one_chunk():
 
 def test_fragmented_byte_by_byte():
     data = encode_frame(b"fragmented-payload") + encode_frame(b"second")
-    dec, out = FrameDecoder(), []
-    for i in range(len(data)):
-        out += dec.feed(data[i:i + 1])
-    assert out == [b"fragmented-payload", b"second"]
-    assert dec.buffered == 0
+    decoder, output = FrameDecoder(), []
+    for byte in data:
+        output.extend(decoder.feed(bytes((byte,))))
+    assert output == [b"fragmented-payload", b"second"]
+    assert decoder.buffered == decoder.pending_bytes == 0
 
 
 def test_oversize_rejected_on_encode_and_decode():
     with pytest.raises(FramingError):
         encode_frame(b"x" * 11, max_bytes=10)
-    big = encode_frame(b"x" * 11, max_bytes=100)
     with pytest.raises(FramingError):
-        FrameDecoder(max_bytes=10).feed(big)
+        FrameDecoder(max_bytes=10).feed(struct.pack(">I", 11) + b"x" * 11)
 
 
 def test_partial_frame_waits():
-    dec = FrameDecoder()
-    assert dec.feed(encode_frame(b"abcdef")[:5]) == []
-    assert dec.buffered == 5
+    decoder = FrameDecoder()
+    assert decoder.feed(encode_frame(b"abcdef")[:5]) == []
+    assert decoder.buffered == 5

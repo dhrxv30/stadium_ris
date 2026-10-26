@@ -51,7 +51,8 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from common.constants import MSG_FEEDBACK_REPORT, PROTOCOL_VERSION
+from common.constants import MSG_FEEDBACK_REPORT, MSG_TELEMETRY_A, PROTOCOL_VERSION
+from common.telemetry_messages import make_message as make_telemetry_message
 from common.validation import ConfigError, load_config
 
 from device_population import DevicePopulation, DEFAULT_ZONE_GEOMETRIES
@@ -127,6 +128,8 @@ class LaptopASystem:
         rate_multiplier: float = 1.0,
         feedback_interval_sec: float = 1.0,
         lap_b_ip: str = "127.0.0.1",
+        lap_c_ip: str = "127.0.0.1",
+        lap_c_telemetry_port: int = 9101,
         lap_b_data_port: int = 0,
         lap_b_oob_port: int = 9002,
         telemetry_port: int = 9003,
@@ -158,6 +161,8 @@ class LaptopASystem:
             raise ValueError("lap_b_oob_port must be between 1 and 65535")
         if telemetry_port < 0 or telemetry_port > 65535:
             raise ValueError("telemetry_port must be between 0 and 65535")
+        if lap_c_telemetry_port < 1 or lap_c_telemetry_port > 65535:
+            raise ValueError("lap_c_telemetry_port must be between 1 and 65535")
 
         self.mode = mode
         self.num_zones = num_zones
@@ -166,6 +171,8 @@ class LaptopASystem:
         self.dt = 1.0 / tick_rate_hz
         self.feedback_interval_sec = feedback_interval_sec
         self.lap_b_ip = lap_b_ip
+        self.lap_c_ip = lap_c_ip
+        self.lap_c_telemetry_port = lap_c_telemetry_port
         self.lap_b_data_port = lap_b_data_port
         self.lap_b_oob_port = lap_b_oob_port
         self.telemetry_port = telemetry_port
@@ -256,6 +263,9 @@ class LaptopASystem:
         self.telemetry_server: Optional[socket.socket] = None
         self.telemetry_clients: List[socket.socket] = []
         self.telemetry_buffers: Dict[socket.socket, bytearray] = {}
+        self.c_telemetry_sock: Optional[socket.socket] = None
+        self.c_telemetry_connected = False
+        self._c_telemetry_seq = 0
 
         self.data_sock: Optional[socket.socket] = None
         self.data_buffer = bytearray()
@@ -338,6 +348,106 @@ class LaptopASystem:
             except Exception:
                 self.oob_connected = False
                 self.metrics.increment("net_conn_errors")
+
+        if not self.c_telemetry_connected:
+            try:
+                if self.c_telemetry_sock:
+                    self.c_telemetry_sock.close()
+                self.c_telemetry_sock = socket.create_connection(
+                    (self.lap_c_ip, self.lap_c_telemetry_port), timeout=0.2
+                )
+                self.c_telemetry_sock.settimeout(0.2)
+                self.c_telemetry_connected = True
+                print(
+                    f"[Net] Connected to Laptop C telemetry at "
+                    f"{self.lap_c_ip}:{self.lap_c_telemetry_port}"
+                )
+            except OSError:
+                self.c_telemetry_connected = False
+                self.metrics.increment("net_conn_errors")
+
+    def _send_c_telemetry(self, snapshot: dict) -> None:
+        if not self.c_telemetry_connected or not self.c_telemetry_sock:
+            return
+
+        zone_population = self.population.get_zone_summary()
+        zone_payloads = {}
+        zones = snapshot["zones"]
+        for index in range(self.num_zones):
+            zone_id = f"Z{index + 1}"
+            zone = zones[zone_id]
+            population = zone_population[zone_id]
+            zone_payloads[zone_id] = {
+                "generated_ul": zone["generated"],
+                "delivered_dl": zone["delivered"],
+                "dropped_dl": zone["dropped"],
+                "pending_ul": zone["queue_ul"],
+                "pending_dl": zone["queue_dl"],
+                "queue_occupancy": zone["queue_ul"] + zone["queue_dl"],
+                "queue_capacity": (
+                    self.pdu_gateway.ul_queues[index].max_size
+                    + self.pdu_gateway.dl_queues[index].max_size
+                ),
+                "sinr_db": population["mean_sinr_db"],
+                "estimated_per": population["mean_per"],
+                "mean_latency_ms": zone["latency"]["mean_ms"],
+                "p95_latency_ms": zone["latency"]["p95_ms"],
+            }
+
+        global_metrics = snapshot["global"]
+        payload = {
+            "device_population": {
+                "total": self.total_devices,
+                "senders": self.total_devices // 2,
+                "receivers": self.total_devices // 2,
+                "per_zone": {
+                    f"Z{i + 1}": {
+                        "senders": len(self.population.get_sources(i)),
+                        "receivers": len(self.population.get_receivers(i)),
+                    }
+                    for i in range(self.num_zones)
+                },
+            },
+            "traffic_summary": {
+                "uplink": {
+                    "generated": global_metrics["pdu_generated"],
+                    "delivered": 0,
+                    "dropped": 0,
+                    "pending": sum(zone["queue_ul"] for zone in zones.values()),
+                    "timed_out": 0,
+                },
+                "downlink": {
+                    "generated": 0,
+                    "delivered": global_metrics["pdu_delivered"],
+                    "dropped": global_metrics["pdu_dropped"],
+                    "pending": sum(zone["queue_dl"] for zone in zones.values()),
+                    "timed_out": 0,
+                },
+                "ack_count": global_metrics["pdu_acked"],
+                "nack_count": global_metrics["pdu_nacked"],
+                "retry_count": global_metrics["pdu_retransmitted"],
+            },
+            "zones": zone_payloads,
+            "metrics": {
+                "mean_latency_ms": global_metrics["latency"]["mean_ms"],
+                "p95_latency_ms": global_metrics["latency"]["p95_ms"],
+                "throughput_bps": global_metrics["throughput_bps"],
+            },
+        }
+        message = make_telemetry_message(
+            MSG_TELEMETRY_A,
+            "A",
+            "C",
+            self.run_id,
+            payload,
+            seq=self._c_telemetry_seq,
+        )
+        if send_framed_json(self.c_telemetry_sock, message):
+            self._c_telemetry_seq += 1
+        else:
+            self.c_telemetry_sock.close()
+            self.c_telemetry_sock = None
+            self.c_telemetry_connected = False
 
     def _build_b_feedback_messages(self, report: dict, window_end_wall: float) -> List[dict]:
         """Translate Laptop A window metrics into Laptop B's per-zone protocol."""
@@ -803,6 +913,8 @@ class LaptopASystem:
                         send_framed_json(c, telemetry_msg)
                     except Exception:
                         pass
+            if self.mode == "networked" and self.c_telemetry_connected:
+                self._send_c_telemetry(self.metrics.snapshot())
 
         # 8. Network Maintenance (Polling & Auto-reconnect)
         if self.mode == "networked":
@@ -925,6 +1037,11 @@ class LaptopASystem:
                 self.oob_sock.close()
             except Exception:
                 pass
+        if self.c_telemetry_sock:
+            try:
+                self.c_telemetry_sock.close()
+            except Exception:
+                pass
         for c in self.telemetry_clients:
             try:
                 c.close()
@@ -1015,6 +1132,18 @@ def main(argv=None):
         help="Laptop B reachable IP (defaults to 127.0.0.1; set this to B's LAN IP for remote use)",
     )
     parser.add_argument(
+        "--lap-c-ip",
+        type=str,
+        default=None,
+        help="Laptop C reachable IP (defaults to shared network.yaml)",
+    )
+    parser.add_argument(
+        "--lap-c-telemetry-port",
+        type=int,
+        default=None,
+        help="Laptop C telemetry listener port (defaults to shared network.yaml)",
+    )
+    parser.add_argument(
         "--lap-b-data-port",
         type=int,
         default=0,
@@ -1098,6 +1227,12 @@ def main(argv=None):
     export_dir = args.export_dir or os.path.join(PROJECT_ROOT, run_config["output_dir"])
     run_id = args.run_id or f"RUN_{time.strftime('%Y%m%d_%H%M%S')}_S{seed}"
     lap_b_ip = args.lap_b_ip or "127.0.0.1"
+    lap_c_ip = args.lap_c_ip or config["network"]["laptop_c"]["host"]
+    lap_c_telemetry_port = (
+        args.lap_c_telemetry_port
+        if args.lap_c_telemetry_port is not None
+        else config["network"]["laptop_c"]["telemetry_port_a"]
+    )
     lap_b_oob_port = (
         args.lap_b_oob_port
         if args.lap_b_oob_port is not None
@@ -1152,6 +1287,8 @@ def main(argv=None):
             rate_multiplier=args.rate_mult,
             feedback_interval_sec=args.feedback_interval,
             lap_b_ip=lap_b_ip,
+            lap_c_ip=lap_c_ip,
+            lap_c_telemetry_port=lap_c_telemetry_port,
             lap_b_data_port=args.lap_b_data_port,
             lap_b_oob_port=lap_b_oob_port,
             telemetry_port=args.telemetry_port,

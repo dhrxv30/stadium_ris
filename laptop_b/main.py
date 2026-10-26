@@ -13,7 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from common.constants import MSG_TELEMETRY_B
+from common.framing import encode_frame
 from common.logging_utils import setup_logging          # noqa: E402
+from common.messages import encode_json_message
+from common.telemetry_messages import make_message as make_telemetry_message
 from common.validation import ConfigError, load_config  # noqa: E402
 from laptop_b.controller import ControllerB             # noqa: E402
 from laptop_b.mock_feedback import run_mock_a           # noqa: E402
@@ -28,6 +32,7 @@ def parse_args(argv=None):
     p.add_argument("--config-dir", default=str(ROOT / "config"))
     p.add_argument("--host", help="bind address override")
     p.add_argument("--port", type=int, help="listen port override")
+    p.add_argument("--lap-c-ip", help="Laptop C reachable LAN IP override")
     p.add_argument("--seed", type=int)
     p.add_argument("--duration", type=float, dest="duration_s",
                    help="seconds to run (0 = until Ctrl+C)")
@@ -46,6 +51,60 @@ async def status_loop(ctrl, interval):
         print(ctrl.status_summary(), flush=True)
 
 
+async def publish_telemetry_to_c(ctrl, network, run_id, stop):
+    """Reconnect to Laptop C and publish the latest controller state."""
+    host = network["laptop_c"]["host"]
+    port = network["laptop_c"]["telemetry_port_b"]
+    max_bytes = network["max_message_bytes"]
+    interval = 0.5
+    seq = 0
+
+    while not stop.is_set():
+        writer = None
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=network["connect_timeout_s"],
+            )
+            ctrl.telemetry_c_connected = True
+            ctrl.log.info("Laptop C telemetry connected at %s:%d", host, port)
+            while not stop.is_set():
+                message = make_telemetry_message(
+                    MSG_TELEMETRY_B,
+                    "B",
+                    "C",
+                    run_id,
+                    ctrl.telemetry_payload(),
+                    seq=seq,
+                )
+                writer.write(encode_frame(
+                    encode_json_message(message), max_bytes
+                ))
+                await writer.drain()
+                seq += 1
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    pass
+        except (OSError, asyncio.TimeoutError) as exc:
+            ctrl.telemetry_c_connected = False
+            ctrl.log.warning("Laptop C telemetry unavailable: %r", exc)
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), timeout=network["reconnect_interval_s"]
+                )
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            ctrl.telemetry_c_connected = False
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
+
 async def amain(args) -> int:
     overrides = {k: getattr(args, k) for k in
                  ("host", "port", "seed", "duration_s", "log_level", "status_interval_s")}
@@ -54,6 +113,8 @@ async def amain(args) -> int:
     except ConfigError as exc:
         print(f"[LAPTOP B] CONFIG ERROR: {exc}", file=sys.stderr)
         return 2
+    if args.lap_c_ip:
+        cfg["network"]["laptop_c"]["host"] = args.lap_c_ip
     print("[LAPTOP B] configuration validated OK")
 
     run = cfg["network"]["run"]
@@ -76,6 +137,11 @@ async def amain(args) -> int:
     listen_port = (args.port or 0) if args.mode == "mock" else net_b["port"]
     port = await ctrl.start(host, listen_port)
     status_task = asyncio.create_task(status_loop(ctrl, run["status_interval_s"]))
+    telemetry_task = None
+    if args.mode != "mock":
+        telemetry_task = asyncio.create_task(
+            publish_telemetry_to_c(ctrl, cfg["network"], run_id, stop)
+        )
     exit_code = 0
 
     try:
@@ -108,6 +174,12 @@ async def amain(args) -> int:
         pass
     finally:
         status_task.cancel()
+        if telemetry_task:
+            telemetry_task.cancel()
+            try:
+                await telemetry_task
+            except asyncio.CancelledError:
+                pass
         await ctrl.stop()
         print("\n[LAPTOP B] FINAL SUMMARY")
         print(ctrl.status_summary())
