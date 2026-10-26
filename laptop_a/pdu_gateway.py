@@ -394,10 +394,12 @@ class PDUGateway:
         accepted, dropped = self.dl_queues[zone].enqueue(pdu)
 
         if self.metrics:
-            self.metrics.increment("pdu_retransmitted")
-            self.metrics.zone_increment(zone, "pdu_retransmitted")
-            if dropped:
+            if accepted:
+                self.metrics.increment("pdu_retransmitted")
+                self.metrics.zone_increment(zone, "pdu_retransmitted")
+            elif dropped:
                 self.metrics.record_drop(f"retx_queue_full_z{zone}")
+                self.metrics.zone_increment(zone, "pdu_dropped")
 
         return accepted
 

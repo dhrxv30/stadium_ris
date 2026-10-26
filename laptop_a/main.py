@@ -13,13 +13,12 @@ Architecture:
   • MetricsRegistry   — Real-time accounting, terminal TUI dashboard & CSV export.
 
 Communication Interfaces:
-  1. Data Plane (TCP):
-     - Streams uplink PDUs to Laptop B.
-     - Receives scheduled downlink PDUs from Laptop B.
-  2. OOB Control Plane (TCP/UDP Sub-GHz simulation):
-     - Sends periodic RECEIVER_FEEDBACK_REPORT to Laptop B.
-     - Receives RIS_STATE_UPDATE & SCHEDULING_UPDATE from Laptop B.
-     - Sends ACKs for control commands.
+  1. Optional Data Plane (TCP):
+     - Supports uplink/downlink exchange with a Laptop B data-plane service.
+     - The current Laptop B implementation does not expose this service.
+  2. Feedback Control Plane (TCP; OOB is software-simulated):
+     - Sends protocol-v1 per-zone FEEDBACK_REPORT messages to Laptop B.
+     - Can process RIS_STATE_UPDATE & SCHEDULING_UPDATE if provided by a peer.
   3. Supervisory & Telemetry Plane (TCP):
      - Streams live telemetry to Laptop C (Central Supervisor & 3D Visualizer).
      - Receives supervisory commands (profile changes, rate scaling, pause/resume).
@@ -37,13 +36,23 @@ import select
 import signal
 import threading
 import argparse
+import logging
+import math
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
+
+logger = logging.getLogger("laptop_a")
 
 # Ensure current directory is in python path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from common.constants import MSG_FEEDBACK_REPORT, PROTOCOL_VERSION
+from common.validation import ConfigError, load_config
 
 from device_population import DevicePopulation, DEFAULT_ZONE_GEOMETRIES
 from traffic_generator import TrafficGenerator, TrafficProfile, ProfileType, PRESET_PROFILES
@@ -61,10 +70,13 @@ def send_framed_json(sock: socket.socket, data: Any) -> bool:
     """Send length-prefixed JSON object over socket: [4 bytes big-endian length][UTF-8 payload]."""
     try:
         payload = json.dumps(data).encode("utf-8")
+        if len(payload) > 1_048_576:
+            raise ValueError(f"JSON frame exceeds 1048576 bytes: {len(payload)}")
         header = len(payload).to_bytes(4, byteorder="big")
         sock.sendall(header + payload)
         return True
-    except Exception:
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("Could not send framed JSON message: %s", exc)
         return False
 
 
@@ -74,10 +86,12 @@ def read_framed_json(sock: socket.socket, buffer: bytearray) -> List[Any]:
     try:
         chunk = sock.recv(65536)
         if not chunk:
-            return messages
+            raise ConnectionError("peer closed the framed JSON connection")
         buffer.extend(chunk)
         while len(buffer) >= 4:
             msg_len = int.from_bytes(buffer[:4], byteorder="big")
+            if msg_len > 1_048_576:
+                raise ValueError(f"Incoming JSON frame exceeds 1048576 bytes: {msg_len}")
             if len(buffer) < 4 + msg_len:
                 break
             msg_bytes = buffer[4:4 + msg_len]
@@ -85,10 +99,12 @@ def read_framed_json(sock: socket.socket, buffer: bytearray) -> List[Any]:
             try:
                 msg = json.loads(msg_bytes.decode("utf-8"))
                 messages.append(msg)
-            except json.JSONDecodeError:
-                pass
-    except (BlockingIOError, socket.error):
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                logger.warning("Ignoring malformed framed JSON message: %s", exc)
+    except BlockingIOError:
         pass
+    except (OSError, ConnectionError, ValueError):
+        raise
     return messages
 
 
@@ -111,14 +127,38 @@ class LaptopASystem:
         rate_multiplier: float = 1.0,
         feedback_interval_sec: float = 1.0,
         lap_b_ip: str = "127.0.0.1",
-        lap_b_data_port: int = 9001,
+        lap_b_data_port: int = 0,
         lap_b_oob_port: int = 9002,
         telemetry_port: int = 9003,
         enable_mobility: bool = False,
         export_dir: str = "./results",
         show_dashboard: bool = True,
         run_id: str = "RUN_001",
+        random_seed: int = 42,
+        pdu_event_sample_rate: int = 0,
+        status_interval_sec: float = 1.0,
     ):
+        if num_zones < 1 or num_zones > len(DEFAULT_ZONE_GEOMETRIES):
+            raise ValueError(f"num_zones must be between 1 and {len(DEFAULT_ZONE_GEOMETRIES)}")
+        if total_devices <= 0 or total_devices % num_zones:
+            raise ValueError("total_devices must be a positive multiple of num_zones")
+        if not math.isfinite(tick_rate_hz) or tick_rate_hz <= 0:
+            raise ValueError("tick_rate_hz must be positive")
+        if not math.isfinite(feedback_interval_sec) or feedback_interval_sec <= 0:
+            raise ValueError("feedback_interval_sec must be positive")
+        if not math.isfinite(rate_multiplier) or rate_multiplier < 0:
+            raise ValueError("rate_multiplier must be non-negative")
+        if not math.isfinite(status_interval_sec) or status_interval_sec <= 0:
+            raise ValueError("status_interval_sec must be positive")
+        if pdu_event_sample_rate < 0:
+            raise ValueError("pdu_event_sample_rate must be non-negative")
+        if lap_b_data_port < 0 or lap_b_data_port > 65535:
+            raise ValueError("lap_b_data_port must be between 0 and 65535")
+        if lap_b_oob_port < 1 or lap_b_oob_port > 65535:
+            raise ValueError("lap_b_oob_port must be between 1 and 65535")
+        if telemetry_port < 0 or telemetry_port > 65535:
+            raise ValueError("telemetry_port must be between 0 and 65535")
+
         self.mode = mode
         self.num_zones = num_zones
         self.total_devices = total_devices
@@ -132,6 +172,7 @@ class LaptopASystem:
         self.export_dir = export_dir
         self.show_dashboard = show_dashboard
         self.run_id = run_id
+        self.random_seed = random_seed
 
         # State flags
         self.running = False
@@ -140,17 +181,43 @@ class LaptopASystem:
         self.tick_counter = 0
 
         # --- 1. Core Model Components ---
-        print(f"[Init] Creating 50,000-device stadium population across {num_zones} zones...")
+        print(f"[Init] Creating {total_devices:,}-device stadium population across {num_zones} zones...")
         self.population = DevicePopulation(
             total_devices=total_devices,
             num_zones=num_zones,
-            rng_seed=42,
+            rng_seed=random_seed,
         )
         if enable_mobility:
             self.population.enable_mobility(max_speed_mps=1.5)
 
         print("[Init] Initialising metrics registry and accounting...")
-        self.metrics = MetricsRegistry(num_zones=num_zones)
+        self.metrics = MetricsRegistry(
+            num_zones=num_zones,
+            pdu_event_sample_rate=pdu_event_sample_rate,
+            dashboard_interval_sec=status_interval_sec,
+        )
+        self.metrics.set_run_metadata({
+            "run_id": run_id,
+            "mode": mode,
+            "seed": random_seed,
+            "logical_devices": total_devices,
+            "zones": num_zones,
+            "senders": sum(len(self.population.get_sources(z)) for z in range(num_zones)),
+            "receivers": sum(len(self.population.get_receivers(z)) for z in range(num_zones)),
+            "tick_rate_hz": tick_rate_hz,
+            "traffic_preset": preset_name,
+        })
+        print(
+            f"[Population] Logical endpoints={self.total_devices:,} | "
+            f"senders={sum(len(self.population.get_sources(z)) for z in range(num_zones)):,} | "
+            f"receivers={sum(len(self.population.get_receivers(z)) for z in range(num_zones)):,}"
+        )
+        for zone_id, geometry in enumerate(self.population.zones):
+            print(
+                f"[Population] Z{zone_id + 1} {geometry.name}: "
+                f"senders={len(self.population.get_sources(zone_id)):,}, "
+                f"receivers={len(self.population.get_receivers(zone_id)):,}"
+            )
 
         print(f"[Init] Initialising traffic generator with preset '{preset_name}'...")
         initial_profiles = PRESET_PROFILES.get(preset_name, PRESET_PROFILES["normal"])
@@ -158,7 +225,7 @@ class LaptopASystem:
             population=self.population,
             profiles=initial_profiles,
             rate_multiplier=rate_multiplier,
-            rng_seed=123,
+            rng_seed=random_seed + 1,
         )
 
         print("[Init] Initialising per-zone bounded PDU queues with priority scheduling...")
@@ -175,7 +242,7 @@ class LaptopASystem:
         self.receiver_model = ReceiverModel(
             population=self.population,
             channel_config=ChannelConfig(),
-            rng_seed=777,
+            rng_seed=random_seed + 2,
         )
 
         print("[Init] Initialising aggregated receiver feedback engine...")
@@ -193,6 +260,7 @@ class LaptopASystem:
         self.data_sock: Optional[socket.socket] = None
         self.data_buffer = bytearray()
         self.data_connected = False
+        self._data_plane_inflight_ids = set()
 
         self.oob_sock: Optional[socket.socket] = None
         self.oob_buffer = bytearray()
@@ -200,6 +268,12 @@ class LaptopASystem:
 
         self._last_reconnect_attempt = 0.0
         self._last_telemetry_emit = 0.0
+        self._feedback_seq_by_zone = {z: 0 for z in range(num_zones)}
+        self._last_feedback_generated = {z: 0 for z in range(num_zones)}
+        self._last_feedback_delivered = {z: 0 for z in range(num_zones)}
+        self._last_feedback_dropped = {z: 0 for z in range(num_zones)}
+        self._feedback_window_start_wall = time.time()
+        self._pending_feedback_messages: List[dict] = []
 
         if self.mode == "networked":
             self._setup_network_clients()
@@ -229,8 +303,8 @@ class LaptopASystem:
             return
         self._last_reconnect_attempt = now
 
-        # Data Plane Client
-        if not self.data_connected:
+        # Laptop B currently exposes only its feedback listener.
+        if self.lap_b_data_port > 0 and not self.data_connected:
             try:
                 if self.data_sock:
                     try:
@@ -264,6 +338,89 @@ class LaptopASystem:
             except Exception:
                 self.oob_connected = False
                 self.metrics.increment("net_conn_errors")
+
+    def _build_b_feedback_messages(self, report: dict, window_end_wall: float) -> List[dict]:
+        """Translate Laptop A window metrics into Laptop B's per-zone protocol."""
+        snapshot = self.metrics.snapshot()
+        duration = max(window_end_wall - self._feedback_window_start_wall, 0.0)
+        messages = []
+        zone_metrics = report["payload"]["zone_metrics"]
+
+        for zone_id in range(self.num_zones):
+            zone_name = f"Z{zone_id + 1}"
+            metrics = zone_metrics[zone_name]
+            current = snapshot["zones"][zone_name]
+            generated = current["generated"] - self._last_feedback_generated[zone_id]
+            delivered = current["delivered"] - self._last_feedback_delivered[zone_id]
+            dropped = current["dropped"] - self._last_feedback_dropped[zone_id]
+            occupancy = self.pdu_gateway.get_ul_depth(zone_id) + self.pdu_gateway.get_dl_depth(zone_id)
+            queue_capacity = (
+                self.pdu_gateway.ul_queues[zone_id].max_size
+                + self.pdu_gateway.dl_queues[zone_id].max_size
+            )
+            seq = self._feedback_seq_by_zone[zone_id]
+            payload = {
+                "seq": seq,
+                "window_start": self._feedback_window_start_wall,
+                "window_end": window_end_wall,
+                "queue_occupancy": occupancy,
+                "queue_capacity": queue_capacity,
+                "generated": max(generated, 0),
+                "delivered": max(delivered, 0),
+                "dropped": max(dropped, 0),
+                "mean_sinr_db": float(metrics["sinr_db"]),
+                "per": float(metrics["per"]),
+                "traffic_rate_pps": generated / duration if duration > 0 else 0.0,
+            }
+            messages.append({
+                "version": PROTOCOL_VERSION,
+                "type": MSG_FEEDBACK_REPORT,
+                "msg_id": f"{self.run_id}-{zone_name}-{seq}",
+                "src": "A",
+                "dst": "B",
+                "ts": window_end_wall,
+                "run_id": self.run_id,
+                "zone_id": zone_name,
+                "payload": payload,
+            })
+            self._feedback_seq_by_zone[zone_id] += 1
+            self._last_feedback_generated[zone_id] = current["generated"]
+            self._last_feedback_delivered[zone_id] = current["delivered"]
+            self._last_feedback_dropped[zone_id] = current["dropped"]
+
+        self._feedback_window_start_wall = window_end_wall
+        return messages
+
+    def _queue_feedback_messages(self, messages: List[dict]) -> None:
+        for message in messages:
+            self.metrics.record_feedback_message(message)
+        self._pending_feedback_messages.extend(messages)
+        if len(self._pending_feedback_messages) > 1000:
+            dropped = len(self._pending_feedback_messages) - 1000
+            del self._pending_feedback_messages[:dropped]
+            self.metrics.increment("feedback_reports_expired", dropped)
+
+    def _send_pending_feedback(self) -> None:
+        if not self.oob_connected or not self.oob_sock or not self._pending_feedback_messages:
+            return
+
+        while self._pending_feedback_messages:
+            message = self._pending_feedback_messages[0]
+            if time.time() - message["payload"]["window_end"] > 5.0:
+                self._pending_feedback_messages.pop(0)
+                self.metrics.increment("feedback_reports_expired")
+                continue
+            if not send_framed_json(self.oob_sock, message):
+                self.oob_connected = False
+                self.metrics.increment("net_conn_errors")
+                return
+
+            self._pending_feedback_messages.pop(0)
+            message_bytes = len(json.dumps(message).encode("utf-8")) + 4
+            self.metrics.increment("net_msg_sent")
+            self.metrics.increment("net_bytes_sent", message_bytes)
+            self.metrics.increment("feedback_zone_messages_sent")
+            self.metrics.increment("feedback_reports_sent")
 
     def _poll_telemetry_clients(self) -> None:
         """Accept new connections and process supervisory commands from Laptop C."""
@@ -422,10 +579,16 @@ class LaptopASystem:
                     if isinstance(msg, dict) and msg.get("message_type") == "DL_PDU_BATCH":
                         pdus = msg.get("pdus", [])
                         for p in pdus:
+                            pdu_id = p.get("pdu_id")
+                            if pdu_id in self._data_plane_inflight_ids:
+                                self._data_plane_inflight_ids.remove(pdu_id)
                             self.pdu_gateway.enqueue_downlink(p)
                     elif isinstance(msg, list):
                         for p in msg:
                             if isinstance(p, dict):
+                                pdu_id = p.get("pdu_id")
+                                if pdu_id in self._data_plane_inflight_ids:
+                                    self._data_plane_inflight_ids.remove(pdu_id)
                                 self.pdu_gateway.enqueue_downlink(p)
             except Exception:
                 self.data_connected = False
@@ -496,7 +659,12 @@ class LaptopASystem:
         for p in new_pdus:
             z = p.get("src_zone", 0)
             self.metrics.zone_increment(z, "pdu_generated")
-            self.pdu_gateway.enqueue_uplink(p)
+            self.metrics.record_pdu_event(p, "generated", sim_time=self.sim_time)
+            if not self.pdu_gateway.enqueue_uplink(p):
+                p["drop_time"] = self.sim_time
+                self.metrics.record_pdu_event(
+                    p, "dropped", sim_time=self.sim_time, drop_reason="uplink_queue_full"
+                )
 
         # 3. Process Uplink Queues
         ul_batch = self.pdu_gateway.dequeue_uplink_batch(total_count=1000)
@@ -510,16 +678,28 @@ class LaptopASystem:
                     "count": len(ul_batch),
                     "pdus": ul_batch,
                 }
-                send_framed_json(self.data_sock, batch_msg)
-                self.metrics.increment("net_msg_sent")
-                self.metrics.increment("net_bytes_sent", len(json.dumps(batch_msg)))
+                for pdu in ul_batch:
+                    pdu["status"] = "sent"
+                    pdu["sent_time"] = self.sim_time
+                    self._data_plane_inflight_ids.add(pdu["pdu_id"])
+                    self.metrics.record_pdu_event(pdu, "sent", sim_time=self.sim_time)
+                if send_framed_json(self.data_sock, batch_msg):
+                    self.metrics.increment("net_msg_sent")
+                    self.metrics.increment("net_bytes_sent", len(json.dumps(batch_msg)))
+                else:
+                    self.data_connected = False
+                    self.metrics.increment("net_conn_errors")
         else:
             # Standalone / Loopback mode:
             # Simulate BTS forwarding UL PDUs directly into corresponding DL queues
             for pdu in ul_batch:
                 # Mark as DL and enqueue to destination zone
                 pdu["direction"] = "DL"
-                self.pdu_gateway.enqueue_downlink(pdu)
+                if not self.pdu_gateway.enqueue_downlink(pdu):
+                    pdu["drop_time"] = self.sim_time
+                    self.metrics.record_pdu_event(
+                        pdu, "dropped", sim_time=self.sim_time, drop_reason="downlink_queue_full"
+                    )
 
         # 4. Process Downlink Queues (Delivery Evaluation)
         dl_batch = self.pdu_gateway.dequeue_downlink_batch(total_count=1000)
@@ -528,33 +708,71 @@ class LaptopASystem:
             res: DeliveryResult = self.receiver_model.evaluate_delivery(pdu, self.sim_time)
             dst_zone = pdu.get("dst_zone", 0)
             payload_bytes = pdu.get("payload_size", 512)
-
-            # Record in OOB ReceiverFeedback accumulator
-            self.receiver_feedback.record_delivery(pdu, res, self.sim_time)
+            pdu["last_attempt_time"] = self.sim_time
+            pdu["last_sinr_db"] = res.sinr_db
+            pdu["last_per"] = res.per
 
             if res.delivered:
+                pdu["status"] = "delivered"
+                pdu["delivered_time"] = self.sim_time
+                self.metrics.record_pdu_event(
+                    pdu, "delivered", sim_time=self.sim_time, result=res
+                )
                 self.metrics.increment("pdu_delivered")
+                self.metrics.increment("pdu_acked")
                 self.metrics.zone_increment(dst_zone, "pdu_delivered")
+                self.metrics.zone_increment(dst_zone, "pdu_acked")
                 self.metrics.record_latency(dst_zone, res.latency_ms)
                 self.metrics.record_throughput(payload_bytes)
+                self.receiver_feedback.record_delivery(pdu, res, self.sim_time)
             else:
-                self.metrics.increment("pdu_dropped")
-                self.metrics.zone_increment(dst_zone, "pdu_dropped")
-                self.metrics.record_drop(res.drop_reason or "channel_loss")
+                self.metrics.record_pdu_event(
+                    pdu, "attempt_failed", sim_time=self.sim_time, result=res
+                )
+                drop_reason = res.drop_reason or "channel_loss"
+                self.metrics.increment("pdu_nacked")
+                self.metrics.zone_increment(dst_zone, "pdu_nacked")
+                self.metrics.record_drop_attempt(drop_reason)
+                self.metrics.zone_increment(dst_zone, "pdu_attempt_failed")
 
                 # Handle retransmission if eligible
                 if pdu.get("retransmit_count", 0) < self.pdu_gateway.max_retransmissions:
-                    self.pdu_gateway.retransmit_pdu(pdu)
+                    if self.pdu_gateway.retransmit_pdu(pdu):
+                        self.metrics.record_pdu_event(
+                            pdu, "retransmit_queued", sim_time=self.sim_time, result=res
+                        )
+                        continue
+                    pdu["status"] = "dropped"
+                    pdu["drop_time"] = self.sim_time
+                    pdu["drop_reason"] = "retx_queue_full"
+                    self.metrics.record_pdu_event(
+                        pdu, "dropped", sim_time=self.sim_time, result=res,
+                        drop_reason="retx_queue_full",
+                    )
+                    self.receiver_feedback.record_delivery(pdu, res, self.sim_time)
+                    continue
+
+                pdu["status"] = "dropped"
+                pdu["drop_time"] = self.sim_time
+                pdu["drop_reason"] = drop_reason
+                self.metrics.record_pdu_event(
+                    pdu, "dropped", sim_time=self.sim_time, result=res,
+                    drop_reason=drop_reason,
+                )
+                self.metrics.record_drop(drop_reason)
+                self.metrics.zone_increment(dst_zone, "pdu_dropped")
+                self.receiver_feedback.record_delivery(pdu, res, self.sim_time)
 
         # 5. Check OOB Feedback Window & Send Report
         if self.receiver_feedback.is_window_complete(self.sim_time):
             report = self.receiver_feedback.aggregate_report(self.sim_time)
-            self.metrics.increment("feedback_sent")
+            self.metrics.increment("feedback_windows_completed")
 
-            if self.mode == "networked" and self.oob_connected and self.oob_sock:
-                send_framed_json(self.oob_sock, report)
-                self.metrics.increment("net_msg_sent")
-                self.metrics.increment("net_bytes_sent", len(json.dumps(report)))
+            if self.mode == "networked":
+                window_end_wall = time.time()
+                self._queue_feedback_messages(
+                    self._build_b_feedback_messages(report, window_end_wall)
+                )
             elif self.mode == "standalone":
                 # Closed loop demonstration in standalone mode:
                 # Adapt RIS panels dynamically toward zones with highest loss!
@@ -564,6 +782,9 @@ class LaptopASystem:
 
         # 6. Update Queue Depths for Metrics
         self.pdu_gateway.update_metrics_queue_depths()
+        self.metrics.set_pending_pdus(
+            self.pdu_gateway.get_total_pending() + len(self._data_plane_inflight_ids)
+        )
 
         # 7. Telemetry Broadcast to Laptop C (rate-limited to 2 Hz)
         now = time.time()
@@ -586,7 +807,12 @@ class LaptopASystem:
         # 8. Network Maintenance (Polling & Auto-reconnect)
         if self.mode == "networked":
             self._setup_network_clients()
+            self._send_pending_feedback()
             self._poll_laptop_b_messages()
+        self.metrics.set_network_status(
+            self.data_connected,
+            self.oob_connected,
+        )
         self._poll_telemetry_clients()
 
         # 9. Terminal TUI Dashboard
@@ -717,27 +943,52 @@ class LaptopASystem:
 #  CLI Entry Point
 # ---------------------------------------------------------------------------
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Laptop A — BTS, Traffic Generation & User-Data Gateway Runtime"
+        description="Laptop A - BTS, Traffic Generation & User-Data Gateway Runtime"
+    )
+    parser.add_argument(
+        "--config-dir",
+        default=os.path.join(PROJECT_ROOT, "config"),
+        help="Directory containing shared network.yaml, stadium.yaml and ris.yaml",
     )
     parser.add_argument(
         "--mode",
         choices=["standalone", "networked"],
         default="standalone",
-        help="Operation mode: 'standalone' (self-contained loopback) or 'networked' (connects to Laptop B & C). Default: standalone",
+        help="Operation mode: 'standalone' (self-contained loopback) or 'networked' (sends feedback to Laptop B and serves Laptop C). Default: standalone",
     )
     parser.add_argument(
         "--duration",
         type=float,
-        default=0.0,
-        help="Run duration in seconds (0 = run indefinitely). Default: 0",
+        default=None,
+        help="Run duration in seconds (0 = run indefinitely; default from shared network.yaml)",
     )
     parser.add_argument(
         "--tick-rate",
         type=float,
         default=10.0,
         help="Simulation tick rate in Hz. Default: 10.0",
+    )
+    parser.add_argument(
+        "--devices",
+        "--device-count",
+        dest="total_devices",
+        type=int,
+        default=None,
+        help="Total logical endpoints (must divide evenly across zones; default from stadium.yaml)",
+    )
+    parser.add_argument(
+        "--zones",
+        type=int,
+        default=None,
+        help="Number of zones (1-5; default from stadium.yaml)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (default from shared network.yaml)",
     )
     parser.add_argument(
         "--preset",
@@ -755,25 +1006,25 @@ def main():
         "--feedback-interval",
         type=float,
         default=1.0,
-        help="OOB feedback report window interval in seconds. Default: 1.0",
+        help="Feedback report interval in seconds. Default: 1.0",
     )
     parser.add_argument(
         "--lap-b-ip",
         type=str,
-        default="127.0.0.1",
-        help="IP address of Laptop B. Default: 127.0.0.1",
+        default=None,
+        help="Laptop B reachable IP (defaults to 127.0.0.1; set this to B's LAN IP for remote use)",
     )
     parser.add_argument(
         "--lap-b-data-port",
         type=int,
-        default=9001,
-        help="TCP port for Laptop B user-data plane. Default: 9001",
+        default=0,
+        help="Optional TCP port for Laptop B user-data plane (0 disables; Laptop B currently has no data listener). Default: disabled",
     )
     parser.add_argument(
         "--lap-b-oob-port",
         type=int,
-        default=9002,
-        help="TCP port for Laptop B OOB control plane. Default: 9002",
+        default=None,
+        help="Laptop B feedback TCP port (default from shared network.yaml)",
     )
     parser.add_argument(
         "--telemetry-port",
@@ -794,45 +1045,133 @@ def main():
     parser.add_argument(
         "--export-dir",
         type=str,
-        default="./results",
-        help="Output directory for CSV metrics export. Default: ./results",
+        default=None,
+        help="Output directory for CSV metrics export (default from shared network.yaml)",
     )
     parser.add_argument(
         "--run-id",
         type=str,
-        default="RUN_001",
-        help="Run identifier tag for logs and export files. Default: RUN_001",
+        default=None,
+        help="Run identifier tag for logs and export files (default: timestamp and seed)",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default=None,
+        help="Logging verbosity (default from shared network.yaml)",
+    )
+    parser.add_argument(
+        "--pdu-event-sample",
+        type=int,
+        default=0,
+        help="Write one PDU lifecycle event every N events to CSV (0 disables; 1 logs all)",
+    )
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=None,
+        help="Dashboard update interval in seconds (default from shared network.yaml)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config_dir)
+    except ConfigError as exc:
+        parser.error(f"configuration validation failed: {exc}")
 
-    system = LaptopASystem(
-        mode=args.mode,
-        total_devices=50_000,
-        num_zones=5,
-        tick_rate_hz=args.tick_rate,
-        preset_name=args.preset,
-        rate_multiplier=args.rate_mult,
-        feedback_interval_sec=args.feedback_interval,
-        lap_b_ip=args.lap_b_ip,
-        lap_b_data_port=args.lap_b_data_port,
-        lap_b_oob_port=args.lap_b_oob_port,
-        telemetry_port=args.telemetry_port,
-        enable_mobility=args.mobility,
-        export_dir=args.export_dir,
-        show_dashboard=not args.no_dashboard,
-        run_id=args.run_id,
+    stadium = config["stadium"]
+    run_config = config["network"]["run"]
+    total_devices = args.total_devices
+    if total_devices is None:
+        if stadium["senders_per_zone"] != stadium["receivers_per_zone"]:
+            parser.error(
+                "Laptop A currently requires equal senders_per_zone and "
+                "receivers_per_zone; set --devices to select an even split"
+            )
+        total_devices = (
+            stadium["senders_per_zone"] + stadium["receivers_per_zone"]
+        ) * len(stadium["zones"])
+    num_zones = args.zones if args.zones is not None else len(stadium["zones"])
+    seed = args.seed if args.seed is not None else run_config["seed"]
+    duration = args.duration if args.duration is not None else run_config["duration_s"]
+    log_level = args.log_level or run_config["log_level"]
+    export_dir = args.export_dir or os.path.join(PROJECT_ROOT, run_config["output_dir"])
+    run_id = args.run_id or f"RUN_{time.strftime('%Y%m%d_%H%M%S')}_S{seed}"
+    lap_b_ip = args.lap_b_ip or "127.0.0.1"
+    lap_b_oob_port = (
+        args.lap_b_oob_port
+        if args.lap_b_oob_port is not None
+        else config["network"]["laptop_b"]["port"]
     )
 
-    # Register OS signals
+    if num_zones < 1 or num_zones > len(DEFAULT_ZONE_GEOMETRIES):
+        parser.error(f"--zones must be between 1 and {len(DEFAULT_ZONE_GEOMETRIES)}")
+    if total_devices <= 0 or total_devices % num_zones:
+        parser.error("--devices must be positive and evenly divisible by --zones")
+    if not math.isfinite(args.tick_rate) or args.tick_rate <= 0:
+        parser.error("--tick-rate must be positive")
+    if not math.isfinite(duration) or duration < 0:
+        parser.error("--duration must be non-negative")
+    if not math.isfinite(args.feedback_interval) or args.feedback_interval <= 0:
+        parser.error("--feedback-interval must be positive")
+    if not math.isfinite(args.rate_mult) or args.rate_mult < 0:
+        parser.error("--rate-mult must be non-negative")
+    if args.pdu_event_sample < 0:
+        parser.error("--pdu-event-sample must be non-negative")
+    status_interval = (
+        args.status_interval
+        if args.status_interval is not None
+        else run_config["status_interval_s"]
+    )
+    if not math.isfinite(status_interval) or status_interval <= 0:
+        parser.error("--status-interval must be positive")
+
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+    print("[Config] Shared YAML configuration validated successfully.")
+    print(
+        f"[LAPTOP A] RUN={run_id} MODE={args.mode.upper()} "
+        f"DEVICES={total_devices:,} ZONES={num_zones} SEED={seed} "
+        f"LOG_LEVEL={log_level}"
+    )
+
+    try:
+        system = LaptopASystem(
+            mode=args.mode,
+            total_devices=total_devices,
+            num_zones=num_zones,
+            tick_rate_hz=args.tick_rate,
+            preset_name=args.preset,
+            rate_multiplier=args.rate_mult,
+            feedback_interval_sec=args.feedback_interval,
+            lap_b_ip=lap_b_ip,
+            lap_b_data_port=args.lap_b_data_port,
+            lap_b_oob_port=lap_b_oob_port,
+            telemetry_port=args.telemetry_port,
+            enable_mobility=args.mobility,
+            export_dir=export_dir,
+            show_dashboard=not args.no_dashboard,
+            run_id=run_id,
+            random_seed=seed,
+            pdu_event_sample_rate=args.pdu_event_sample,
+            status_interval_sec=status_interval,
+        )
+    except (ValueError, OSError) as exc:
+        parser.error(f"could not start Laptop A: {exc}")
+
     def handle_signal(sig, frame):
-        system.shutdown()
-        sys.exit(0)
+        system.running = False
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-
-    system.run(duration_sec=args.duration)
+    system.run(duration_sec=duration)
 
 
 if __name__ == "__main__":

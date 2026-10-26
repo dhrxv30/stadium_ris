@@ -1,7 +1,79 @@
-# Stadium RIS — Laptop B: RIS / OOB Controller
+# Stadium RIS — Laptop A and Laptop B
 
 Adaptive Closed-Loop OOB-Controlled RIS for High-Density Stadium Hotspot Offloading.
-**This README covers Laptop B only.** Laptop A and Laptop C are built on separate machines.
+Laptop A models traffic and receiver delivery; Laptop B validates zone feedback and
+simulates RIS/OOB control. Laptop C is not included in this workspace.
+
+## Laptop A
+
+Laptop A supports standalone loopback simulation and a networked feedback mode.
+All channel measurements (SINR, PER, fading, and RIS gain) are software simulations,
+not physical RF measurements. The current Laptop B implementation accepts
+per-zone `FEEDBACK_REPORT` messages, but does not yet provide a data-plane listener
+or send RIS/scheduling updates back to Laptop A.
+
+### Setup
+
+From the repository root:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Laptop A loads and validates the shared `config\network.yaml`,
+`config\stadium.yaml`, and `config\ris.yaml` files before startup.
+
+### Run Laptop A standalone
+
+```powershell
+python laptop_a\main.py --mode standalone --duration 10
+```
+
+The default duration comes from `network.yaml`. To run the full 50,000 logical
+endpoints with repeatable randomness, override the seed or choose a smaller
+standalone test population:
+
+```powershell
+python laptop_a\main.py --mode standalone --devices 1000 --zones 5 --seed 42 --duration 10
+```
+
+### Send feedback to Laptop B
+
+Start Laptop B first:
+
+```powershell
+python laptop_b\main.py --mode listen --duration 30
+```
+
+Then start Laptop A using Laptop B's reachable LAN address (not its `0.0.0.0`
+bind address):
+
+```powershell
+python laptop_a\main.py --mode networked --lap-b-ip 192.168.1.20 --duration 30
+```
+
+Networked mode continues local loopback traffic simulation and sends aggregated,
+per-zone feedback to Laptop B on TCP port 9002 by default. If Laptop B is
+temporarily unavailable, Laptop A reconnects and queues recent feedback; reports
+older than Laptop B's five-second freshness limit are discarded. The optional
+data-plane connection is disabled by default because Laptop B does not currently
+implement that listener.
+
+### Laptop A command-line options
+
+`--devices`, `--zones`, `--seed`, `--duration`, `--tick-rate`, `--preset`,
+`--rate-mult`, `--feedback-interval`, `--lap-b-ip`, `--lap-b-oob-port`,
+`--status-interval`, `--export-dir`, and `--log-level` are supported. Use
+`--help` for the full list.
+`--pdu-event-sample N` writes one PDU lifecycle event for every N events; zero
+disables detailed PDU event logging.
+
+Laptop A exports run-specific summary, zone-metrics, receiver-feedback, and
+PDU-event CSV files under the output directory. PDU event logging is
+sampled/disabled by default to avoid unbounded per-packet storage; bounded CSV
+buffers expose truncation counters in the run summary.
 
 ---
 

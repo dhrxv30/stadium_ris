@@ -1,9 +1,9 @@
 # Network configuration (software messages over trusted LAN, TCP + length-prefixed JSON).
 # NOTE: this is NOT a real Sub-GHz OOB radio link; OOB is simulated in software.
 protocol_version: 1
-laptop_a: {host: "192.168.1.10", port: 9001}
-laptop_b: {host: "0.0.0.0",      port: 9002}   # B listens for feedback from A (bind address)
-laptop_c: {host: "192.168.1.30", port: 9003}   # C listens for telemetry
+laptop_a: {host: "192.168.1.54", port: 9001}
+laptop_b: {host: "192.168.1.39", port: 9002}   # B listens for feedback from A (bind address)
+laptop_c: {host: "192.168.1.42", port: 9003}   # C listens for telemetry
 max_message_bytes: 1048576
 connect_timeout_s: 3.0
 idle_timeout_s: 30.0        # B closes a feedback connection that is silent this long
