@@ -1127,8 +1127,10 @@ def main(argv=None):
     )
     parser.add_argument(
         "--lap-b-ip",
+        "--lab-b-ip",
         type=str,
         default=None,
+        dest="lap_b_ip",
         help="Laptop B reachable IP (defaults to 127.0.0.1; set this to B's LAN IP for remote use)",
     )
     parser.add_argument(

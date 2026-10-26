@@ -64,7 +64,6 @@ class TelemetryCollector:
         self._servers = []
         self._writers = set()
         self.ports = {}
-        self._auto_tasks = []
 
     # ---------- lifecycle ----------
     async def start(self):
@@ -85,31 +84,7 @@ class TelemetryCollector:
                 self._servers.append(srv)
                 self.ports[peer] = srv.sockets[0].getsockname()[1]  # real port (supports port 0)
 
-        # Proactively attempt outbound connections in case peer nodes are running as servers
-        for peer in (LAPTOP_A, LAPTOP_B):
-            peer_cfg = self.cfg.get(f"laptop_{peer.lower()}", {})
-            peer_host = peer_cfg.get("host")
-            peer_port = 9003 if peer == LAPTOP_A else (peer_cfg.get("port") or 9002)
-            if peer_host and peer_host not in ("0.0.0.0", "127.0.0.1", ""):
-                t = asyncio.create_task(self._auto_connect(peer, peer_host, peer_port))
-                self._auto_tasks.append(t)
-
-    async def _auto_connect(self, peer, host, port):
-        await asyncio.sleep(1.0)
-        while True:
-            if not self.peers[peer].connected:
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(host, port), timeout=2.0)
-                    await self._handle(peer, reader, writer)
-                except Exception:
-                    pass
-            await asyncio.sleep(2.0)
-
     async def stop(self):
-        for t in self._auto_tasks:
-            t.cancel()
-        self._auto_tasks.clear()
         for s in self._servers:
             s.close()
         for w in list(self._writers):
