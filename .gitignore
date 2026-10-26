@@ -1,0 +1,50 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+laptop_a/venv/
+laptop_b/venv/
+laptop_c/venv/
+
+# ─── Simulation Results & Logs ────────────────────────────────────────────────
+# All run output goes here — keep the directory itself but ignore its contents
+results/
+
+# ─── Pytest / Coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.junit.xml
+
+# ─── Distribution / Build ─────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── Editor & IDE ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
