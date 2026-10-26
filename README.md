@@ -20,29 +20,32 @@ port 9002. Laptop A's TCP 9003 listener is for optional supervisory commands.
 
 ## Run all three laptops
 
-Use the same `--run-id` on all three so Laptop C accepts both telemetry streams.
 Start C first, then B, then A, each in a separate PowerShell window at the
-repository root:
+repository root. Laptop C adopts Laptop A's run ID; Laptop B waits for A's
+first feedback report before sending telemetry so both streams use that run ID.
+If you set `--run-id` on Laptop C, pass the same value to A and B.
 
-**Laptop C** (configured with its local `bind_host`):
+**Laptop C** (configured with its local `bind_host`; add `--dashboard` to open
+the optional graphical window, otherwise the live dashboard is shown in the
+terminal):
 
 ```powershell
-python -m laptop_c.main --config config\network.yaml --run-id STADIUM-001
+python -m laptop_c.main --config config\network.yaml --dashboard
 ```
 
 **Laptop B**:
 
 ```powershell
-python laptop_b\main.py --mode listen --run-id STADIUM-001 --duration 0
+python laptop_b\main.py --mode listen --duration 0
 ```
 
 **Laptop A**:
 
 ```powershell
-python laptop_a\main.py --mode networked --lap-b-ip 192.168.1.39 --run-id STADIUM-001 --duration 0
+python laptop_a\main.py --mode networked --lap-b-ip 192.168.1.39 --duration 0
 ```
 
-Replace the sample run ID and IP with the same run ID and your LAN addresses.
+Replace the sample IP with your Laptop B LAN address.
 Press **Ctrl+C** in each window to stop. Laptop C also supports a local mock
 mode for testing without Laptop A or B:
 

@@ -51,7 +51,7 @@ async def status_loop(ctrl, interval):
         print(ctrl.status_summary(), flush=True)
 
 
-async def publish_telemetry_to_c(ctrl, network, run_id, stop):
+async def publish_telemetry_to_c(ctrl, network, stop):
     """Reconnect to Laptop C and publish the latest controller state."""
     host = network["laptop_c"]["host"]
     port = network["laptop_c"]["telemetry_port_b"]
@@ -60,6 +60,14 @@ async def publish_telemetry_to_c(ctrl, network, run_id, stop):
     seq = 0
 
     while not stop.is_set():
+        telemetry_run_id = ctrl.expected_run_id
+        if telemetry_run_id is None:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
         writer = None
         try:
             _, writer = await asyncio.wait_for(
@@ -73,7 +81,7 @@ async def publish_telemetry_to_c(ctrl, network, run_id, stop):
                     MSG_TELEMETRY_B,
                     "B",
                     "C",
-                    run_id,
+                    telemetry_run_id,
                     ctrl.telemetry_payload(),
                     seq=seq,
                 )
@@ -140,7 +148,7 @@ async def amain(args) -> int:
     telemetry_task = None
     if args.mode != "mock":
         telemetry_task = asyncio.create_task(
-            publish_telemetry_to_c(ctrl, cfg["network"], run_id, stop)
+            publish_telemetry_to_c(ctrl, cfg["network"], stop)
         )
     exit_code = 0
 
