@@ -42,9 +42,9 @@ class CongestionPolicy:
     severe_min: float = 0.90        # >= this => SEVERE
 
     # PDR (packet delivery ratio) thresholds (0..1), applied when PDR is available
-    pdr_floor_moderate: float = 0.90   # PDR < this forces at least MODERATE
-    pdr_floor_congested: float = 0.75  # PDR < this forces at least CONGESTED
-    pdr_floor_severe: float = 0.55     # PDR < this forces SEVERE
+    pdr_floor_moderate: float = 0.995  # PDR < this forces at least MODERATE
+    pdr_floor_congested: float = 0.98  # PDR < this forces at least CONGESTED
+    pdr_floor_severe: float = 0.95     # PDR < this forces SEVERE
 
     # Hysteresis: number of consecutive samples confirming a state before transitioning up/down
     hysteresis_up: int = 2     # samples needed to move to a worse state

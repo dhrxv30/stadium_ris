@@ -31,7 +31,7 @@ class SchedulerDecision:
     zone_id: str
     ts: float
     scheduler_type: str       # "BASELINE" | "CONGESTION_AWARE"
-    action: str               # "HOLD" | "REDUCE" | "BOOST" | "THROTTLE"
+    action: str               # "HOLD" | "REDUCE" | "BOOST" | "BOOST_SERVICE"
     token_weight: float       # relative allocation weight for this zone (1.0 = nominal)
     reason: str
     congestion_state: str
@@ -75,6 +75,7 @@ class CongestionSchedulerPolicy:
     weight_congested: float = 1.60
     weight_severe: float = 2.00
     weight_unknown: float = 1.0
+    severe_service_multiplier: float = 2.0
 
     # SINR bonus: if SINR is above sinr_good_threshold, reduce weight slightly
     sinr_good_threshold_db: float = 20.0
@@ -88,7 +89,7 @@ class CongestionSchedulerPolicy:
         CONGESTION_NORMAL: "HOLD",
         CONGESTION_MODERATE: "BOOST",
         CONGESTION_CONGESTED: "BOOST",
-        CONGESTION_SEVERE: "THROTTLE",
+        CONGESTION_SEVERE: "BOOST_SERVICE",
         CONGESTION_UNKNOWN: "HOLD",
     })
 

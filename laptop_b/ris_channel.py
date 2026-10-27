@@ -6,7 +6,8 @@ Channel model assumptions (documented):
   - Free-space path loss (FSPL) for direct link and RIS-assisted link.
   - RIS-assisted received power adds coherently to direct path
     using a simplified phase-array gain: G_ris ∝ N² · cos²(θ) where θ is the
-    angular error between the RIS steering direction and the receiver direction.
+    angular error between the RIS steering direction and the receiver direction,
+    multiplied by the normalized square-array beam response for steered candidates.
     N = number of reflecting elements per panel (configurable; default 64).
   - Shadowing: log-normal, σ = shadow_std_db (configurable).
   - NLoS: additional loss of nlos_extra_db (configurable per zone).
@@ -148,25 +149,30 @@ class PanelRegistry:
     @classmethod
     def build(cls, zone_ids: List[str], zone_panel_counts: List[int],
               initial_codebook_index: int,
-              stadium_radius_m: float = 80.0):
-        """Build registry with synthetic catwalk geometry around stadium perimeter."""
+              stadium_radius_m: float = 110.0):
+        """Build zone-aligned catwalk groups matching Laptop A's virtual panels."""
         panels, geometries, n = [], {}, 0
-        angles = np.linspace(0, 2 * math.pi, sum(zone_panel_counts), endpoint=False)
-        idx = 0
-        for zone_id, count in zip(zone_ids, zone_panel_counts):
-            for _ in range(count):
+        zone_angles = [math.pi / 2, 0.0, -math.pi / 2, math.pi]
+        for zone_index, (zone_id, count) in enumerate(zip(zone_ids, zone_panel_counts)):
+            if zone_index < len(zone_angles):
+                angles = np.linspace(
+                    zone_angles[zone_index] - math.pi / 8,
+                    zone_angles[zone_index] + math.pi / 8,
+                    count,
+                )
+            else:
+                angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+            for angle in angles:
                 n += 1
                 pid = f"P{n:02d}"
-                angle = angles[idx]
                 x = stadium_radius_m * math.cos(angle)
                 y = stadium_radius_m * math.sin(angle)
-                z = 15.0  # 15 m catwalk height
+                z = 30.0
                 pos = np.array([x, y, z])
                 # Normal points inward toward stadium centre
                 normal = np.array([-math.cos(angle), -math.sin(angle), 0.0])
                 panels.append(PanelState(pid, zone_id, initial_codebook_index))
                 geometries[pid] = PanelGeometry(pid, zone_id, pos, normal)
-                idx += 1
         return cls(panels, geometries)
 
     def by_zone(self, zone_id: str) -> List[PanelState]:
@@ -241,8 +247,11 @@ class ChannelEvaluator:
         shadow = (shadow_draw if shadow_draw is not None
                   else self._rng.gauss(0, p.shadow_std_db))
         nlos_loss = p.nlos_extra_db if is_nlos else 0.0
+        # Shadowing is a dB offset: positive values attenuate the link, negative
+        # values improve it. The previous abs(shadow) formulation always degraded
+        # the direct path, which was inconsistent with the stated log-normal model.
         direct_rx_dbm = (p.tx_power_dbm + p.tx_gain_db + p.rx_gain_db
-                         - pl_direct - abs(shadow) - nlos_loss)
+                         - pl_direct - shadow - nlos_loss)
 
         # --- RIS-assisted path ---
         ris_power_linear = 0.0
@@ -272,10 +281,30 @@ class ChannelEvaluator:
                 # Codebook steering offset: steering angle shifts the peak
                 if codebook_angles is not None and i < len(codebook_angles):
                     steer_rad = codebook_angles[i]
-                    cos_theta = max(0.0, cos_theta * math.cos(steer_rad))
+                    target_angle = math.acos(cos_theta)
+                    beam_error = abs(target_angle - steer_rad)
+                    cos_theta = max(0.0, math.cos(beam_error))
+                    elements_per_side = max(1, round(math.sqrt(p.ris_elements_per_panel)))
+                    half_spacing_phase = 0.5 * math.pi * math.sin(beam_error)
+                    denominator = elements_per_side * math.sin(half_spacing_phase)
+                    if abs(denominator) < 1e-12:
+                        array_amplitude = 1.0
+                    else:
+                        array_amplitude = (
+                            math.sin(elements_per_side * half_spacing_phase)
+                            / denominator
+                        )
+                    array_power_factor = min(1.0, max(0.0, array_amplitude ** 4))
+                else:
+                    array_power_factor = 1.0
 
                 N = p.ris_elements_per_panel
-                ris_array_gain = p.ris_reflection_efficiency * (N ** 2) * (cos_theta ** 2)
+                ris_array_gain = (
+                    p.ris_reflection_efficiency
+                    * (N ** 2)
+                    * (cos_theta ** 2)
+                    * array_power_factor
+                )
                 if ris_array_gain <= 0:
                     continue
 

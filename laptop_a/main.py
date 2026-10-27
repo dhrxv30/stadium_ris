@@ -18,7 +18,7 @@ Communication Interfaces:
      - The current Laptop B implementation does not expose this service.
   2. Feedback Control Plane (TCP; OOB is software-simulated):
      - Sends protocol-v1 per-zone FEEDBACK_REPORT messages to Laptop B.
-     - Can process RIS_STATE_UPDATE & SCHEDULING_UPDATE if provided by a peer.
+     - Applies acknowledged RIS_STATE_UPDATE & SCHEDULING_UPDATE commands from B.
   3. Supervisory & Telemetry Plane (TCP):
      - Streams live telemetry to Laptop C (Central Supervisor & 3D Visualizer).
      - Receives supervisory commands (profile changes, rate scaling, pause/resume).
@@ -39,6 +39,7 @@ import argparse
 import logging
 import math
 import numpy as np
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple, Any
 
 logger = logging.getLogger("laptop_a")
@@ -124,6 +125,7 @@ class LaptopASystem:
         total_devices: int = 50_000,
         num_zones: int = 5,
         tick_rate_hz: float = 10.0,
+        packet_budget_per_tick: int = 3000,
         preset_name: str = "normal",
         rate_multiplier: float = 1.0,
         feedback_interval_sec: float = 1.0,
@@ -147,6 +149,12 @@ class LaptopASystem:
             raise ValueError("total_devices must be a positive multiple of num_zones")
         if not math.isfinite(tick_rate_hz) or tick_rate_hz <= 0:
             raise ValueError("tick_rate_hz must be positive")
+        if (
+            isinstance(packet_budget_per_tick, bool)
+            or not isinstance(packet_budget_per_tick, int)
+            or packet_budget_per_tick <= 0
+        ):
+            raise ValueError("packet_budget_per_tick must be a positive integer")
         if not math.isfinite(feedback_interval_sec) or feedback_interval_sec <= 0:
             raise ValueError("feedback_interval_sec must be positive")
         if not math.isfinite(rate_multiplier) or rate_multiplier < 0:
@@ -168,6 +176,7 @@ class LaptopASystem:
         self.num_zones = num_zones
         self.total_devices = total_devices
         self.tick_rate_hz = tick_rate_hz
+        self.packet_budget_per_tick = packet_budget_per_tick
         self.dt = 1.0 / tick_rate_hz
         self.feedback_interval_sec = feedback_interval_sec
         self.lap_b_ip = lap_b_ip
@@ -212,6 +221,7 @@ class LaptopASystem:
             "senders": sum(len(self.population.get_sources(z)) for z in range(num_zones)),
             "receivers": sum(len(self.population.get_receivers(z)) for z in range(num_zones)),
             "tick_rate_hz": tick_rate_hz,
+            "packet_budget_per_tick": packet_budget_per_tick,
             "traffic_preset": preset_name,
         })
         print(
@@ -284,6 +294,10 @@ class LaptopASystem:
         self._last_feedback_dropped = {z: 0 for z in range(num_zones)}
         self._feedback_window_start_wall = time.time()
         self._pending_feedback_messages: List[dict] = []
+        self._applied_control_updates = OrderedDict()
+        self._ris_config_versions = {
+            panel["panel_id"]: 0 for panel in self.population.ris_panels
+        }
 
         if self.mode == "networked":
             self._setup_network_clients()
@@ -388,6 +402,7 @@ class LaptopASystem:
                     self.pdu_gateway.ul_queues[index].max_size
                     + self.pdu_gateway.dl_queues[index].max_size
                 ),
+                "service_multiplier": self.pdu_gateway.zone_service_multipliers[index],
                 "sinr_db": population["mean_sinr_db"],
                 "estimated_per": population["mean_per"],
                 "mean_latency_ms": zone["latency"]["mean_ms"],
@@ -708,44 +723,210 @@ class LaptopASystem:
             try:
                 msgs = read_framed_json(self.oob_sock, self.oob_buffer)
                 for msg in msgs:
+                    if not isinstance(msg, dict):
+                        logger.warning("Ignoring non-object control message from Laptop B")
+                        continue
                     self.metrics.increment("net_msg_received")
                     mtype = msg.get("message_type", "")
 
-                    if mtype == "RIS_STATE_UPDATE":
-                        # Update RIS configuration in ReceiverModel
-                        self.receiver_model.apply_ris_update(msg)
-                        self.metrics.increment("ris_updates_received")
-                        # Send ACK
-                        ack = {
-                            "message_type": "ACK_RIS_UPDATE",
-                            "status": "applied",
-                            "update_id": msg.get("update_id"),
-                            "timestamp": time.time(),
-                        }
-                        send_framed_json(self.oob_sock, ack)
-
-                    elif mtype == "SCHEDULING_UPDATE":
-                        # Apply new zone weights or policies
-                        weights = msg.get("zone_weights")
-                        if weights:
-                            self.pdu_gateway.zone_weights = self.pdu_gateway._normalise(
-                                {int(k.replace("Z", "")) - 1 if isinstance(k, str) and k.startswith("Z") else int(k): float(v)
-                                 for k, v in weights.items()}
-                            )
-                        pol = msg.get("schedule_policy")
-                        if pol:
-                            try:
-                                self.pdu_gateway.schedule_policy = SchedulePolicy(pol)
-                            except Exception:
-                                pass
-                        ack = {
-                            "message_type": "ACK_SCHEDULING",
-                            "status": "applied",
-                            "timestamp": time.time(),
-                        }
-                        send_framed_json(self.oob_sock, ack)
-            except Exception:
+                    if mtype in ("RIS_STATE_UPDATE", "SCHEDULING_UPDATE"):
+                        ack = self._apply_control_update(msg)
+                        if ack["status"] != "applied":
+                            self.metrics.increment("control_updates_rejected")
+                        if not send_framed_json(self.oob_sock, ack):
+                            self.oob_connected = False
+                            break
+            except (OSError, ValueError) as exc:
+                logger.warning("Laptop B control connection failed: %s", exc)
                 self.oob_connected = False
+
+    def _apply_control_update(self, msg: dict) -> dict:
+        """Validate and apply a control update from B, returning its application ACK."""
+        mtype = msg.get("message_type", "")
+        update_id = msg.get("update_id")
+        ack_type = (
+            "ACK_RIS_UPDATE" if mtype == "RIS_STATE_UPDATE" else "ACK_SCHEDULING"
+        )
+        ack = {
+            "message_type": ack_type,
+            "update_id": update_id,
+            "cmd_id": msg.get("cmd_id"),
+            "status": "rejected",
+            "timestamp": time.time(),
+        }
+        if not isinstance(update_id, str) or not update_id:
+            ack["reason"] = "missing update_id"
+            return ack
+        previous_type = self._applied_control_updates.get(update_id)
+        if previous_type is not None:
+            if previous_type == mtype:
+                ack["status"] = "applied"
+                ack["reason"] = "duplicate update already applied"
+            else:
+                ack["reason"] = "update_id was already used for a different message type"
+            return ack
+
+        try:
+            if mtype == "RIS_STATE_UPDATE":
+                zone_id = msg.get("zone_id")
+                if (
+                    not isinstance(zone_id, str)
+                    or not zone_id.startswith("Z")
+                    or not zone_id[1:].isdigit()
+                ):
+                    raise ValueError("invalid zone_id")
+                zone_index = int(zone_id[1:]) - 1
+                if not 0 <= zone_index < self.num_zones:
+                    raise ValueError("zone_id is out of range")
+                panel_updates = msg.get("panels")
+                if not isinstance(panel_updates, list) or not panel_updates:
+                    raise ValueError("RIS update must contain at least one panel")
+                codebook_index = msg.get("codebook_index")
+                if (
+                    isinstance(codebook_index, bool)
+                    or not isinstance(codebook_index, int)
+                    or codebook_index < 0
+                ):
+                    raise ValueError("invalid codebook_index")
+                validated_panels = []
+                panel_ids = set()
+                for panel_update in panel_updates:
+                    if not isinstance(panel_update, dict):
+                        raise ValueError("panel update must be an object")
+                    panel_id = panel_update.get("panel_id")
+                    if (
+                        isinstance(panel_id, bool)
+                        or not isinstance(panel_id, int)
+                        or panel_id not in self.receiver_model.ris_state
+                    ):
+                        raise ValueError("unknown RIS panel")
+                    if panel_id in panel_ids:
+                        raise ValueError("RIS update contains a duplicate panel")
+                    panel_ids.add(panel_id)
+                    config_version = panel_update.get(
+                        "config_version", msg.get("config_version")
+                    )
+                    if (
+                        isinstance(config_version, bool)
+                        or not isinstance(config_version, int)
+                        or config_version != self._ris_config_versions[panel_id] + 1
+                    ):
+                        raise ValueError("stale or out-of-order RIS configuration version")
+                    if panel_update.get("target_zones") != [zone_index]:
+                        raise ValueError("RIS panel must target the commanded zone")
+                    if not isinstance(panel_update.get("active"), bool):
+                        raise ValueError("panel active state must be boolean")
+                    if "gain_db" in panel_update:
+                        raw_gain = panel_update["gain_db"]
+                        if (
+                            isinstance(raw_gain, bool)
+                            or not isinstance(raw_gain, (int, float))
+                            or not math.isfinite(raw_gain)
+                        ):
+                            raise ValueError("RIS gain_db must be finite numeric")
+                    validated_panels.append((panel_id, config_version))
+                raw_sinr_offset = msg.get("zone_sinr_offset_db", 0.0)
+                if isinstance(raw_sinr_offset, bool):
+                    raise ValueError("zone_sinr_offset_db must be numeric")
+                sinr_offset = float(raw_sinr_offset)
+                if not math.isfinite(sinr_offset) or abs(sinr_offset) > 30.0:
+                    raise ValueError("zone_sinr_offset_db must be finite and within +/-30 dB")
+                for panel_update in panel_updates:
+                    panel_update["phase"] = codebook_index
+                if not self.receiver_model.apply_ris_update(msg):
+                    raise ValueError("RIS update contained no applicable panels")
+                self.receiver_model.set_zone_sinr_offset(zone_index, sinr_offset)
+                for panel_id, config_version in validated_panels:
+                    self._ris_config_versions[panel_id] = config_version
+                self.metrics.increment("ris_updates_received")
+
+            elif mtype == "SCHEDULING_UPDATE":
+                weights = msg.get("zone_weights")
+                if not isinstance(weights, dict) or len(weights) != self.num_zones:
+                    raise ValueError("zone_weights must contain one weight per zone")
+                indexed_weights = {}
+                for zone_name, value in weights.items():
+                    if (
+                        not isinstance(zone_name, str)
+                        or not zone_name.startswith("Z")
+                        or not zone_name[1:].isdigit()
+                    ):
+                        raise ValueError(f"invalid zone name: {zone_name!r}")
+                    zone_index = int(zone_name[1:]) - 1
+                    if zone_name != f"Z{zone_index + 1}":
+                        raise ValueError(f"zone name is not canonical: {zone_name!r}")
+                    if isinstance(value, bool):
+                        raise ValueError(f"invalid scheduling weight for {zone_name}")
+                    weight = float(value)
+                    if (
+                        not 0 <= zone_index < self.num_zones
+                        or not math.isfinite(weight)
+                        or weight < 0
+                    ):
+                        raise ValueError(f"invalid scheduling weight for {zone_name}")
+                    indexed_weights[zone_index] = weight
+                if len(indexed_weights) != self.num_zones:
+                    raise ValueError("zone_weights must identify every zone exactly once")
+                if sum(indexed_weights.values()) <= 0:
+                    raise ValueError("at least one scheduling weight must be positive")
+                raw_service_multipliers = msg.get(
+                    "zone_service_multipliers",
+                    {f"Z{z + 1}": 1.0 for z in range(self.num_zones)},
+                )
+                if (
+                    not isinstance(raw_service_multipliers, dict)
+                    or len(raw_service_multipliers) != self.num_zones
+                ):
+                    raise ValueError(
+                        "zone_service_multipliers must contain one multiplier per zone"
+                    )
+                indexed_service_multipliers = {}
+                for zone_name, value in raw_service_multipliers.items():
+                    if (
+                        not isinstance(zone_name, str)
+                        or not zone_name.startswith("Z")
+                        or not zone_name[1:].isdigit()
+                    ):
+                        raise ValueError(
+                            f"invalid service multiplier zone: {zone_name!r}"
+                        )
+                    zone_index = int(zone_name[1:]) - 1
+                    if zone_name != f"Z{zone_index + 1}" or not 0 <= zone_index < self.num_zones:
+                        raise ValueError(
+                            f"invalid service multiplier zone: {zone_name!r}"
+                        )
+                    if isinstance(value, bool):
+                        raise ValueError(
+                            f"invalid service multiplier for {zone_name}"
+                        )
+                    multiplier = float(value)
+                    if (
+                        not math.isfinite(multiplier)
+                        or not 1.0 <= multiplier <= 2.0
+                    ):
+                        raise ValueError(
+                            f"service multiplier for {zone_name} must be between 1 and 2"
+                        )
+                    indexed_service_multipliers[zone_index] = multiplier
+                policy = SchedulePolicy(msg.get("schedule_policy"))
+                self.pdu_gateway.set_zone_weights(indexed_weights)
+                self.pdu_gateway.set_zone_service_multipliers(
+                    indexed_service_multipliers
+                )
+                self.pdu_gateway.set_schedule_policy(policy)
+                self.metrics.increment("scheduling_updates_received")
+
+            else:
+                raise ValueError(f"unsupported control message: {mtype}")
+        except (TypeError, ValueError, KeyError) as exc:
+            ack["reason"] = str(exc)
+            return ack
+
+        self._applied_control_updates[update_id] = mtype
+        if len(self._applied_control_updates) > 10_000:
+            self._applied_control_updates.popitem(last=False)
+        ack["status"] = "applied"
+        return ack
 
     # -----------------------------------------------------------------------
     #  Main Simulation Tick
@@ -777,7 +958,9 @@ class LaptopASystem:
                 )
 
         # 3. Process Uplink Queues
-        ul_batch = self.pdu_gateway.dequeue_uplink_batch(total_count=1000)
+        ul_batch = self.pdu_gateway.dequeue_uplink_batch(
+            total_count=self.packet_budget_per_tick
+        )
 
         if self.mode == "networked" and self.data_connected and self.data_sock:
             # Transmit UL PDUs to Laptop B
@@ -812,7 +995,9 @@ class LaptopASystem:
                     )
 
         # 4. Process Downlink Queues (Delivery Evaluation)
-        dl_batch = self.pdu_gateway.dequeue_downlink_batch(total_count=1000)
+        dl_batch = self.pdu_gateway.dequeue_downlink_batch(
+            total_count=self.packet_budget_per_tick
+        )
 
         for pdu in dl_batch:
             res: DeliveryResult = self.receiver_model.evaluate_delivery(pdu, self.sim_time)
@@ -1088,6 +1273,15 @@ def main(argv=None):
         help="Simulation tick rate in Hz. Default: 10.0",
     )
     parser.add_argument(
+        "--packet-budget",
+        type=int,
+        default=3000,
+        help=(
+            "Maximum PDUs processed per tick per direction "
+            "(default: 3000; 30,000 PDU/s at 10 Hz)"
+        ),
+    )
+    parser.add_argument(
         "--devices",
         "--device-count",
         dest="total_devices",
@@ -1255,6 +1449,8 @@ def main(argv=None):
         parser.error("--devices must be positive and evenly divisible by --zones")
     if not math.isfinite(args.tick_rate) or args.tick_rate <= 0:
         parser.error("--tick-rate must be positive")
+    if args.packet_budget <= 0:
+        parser.error("--packet-budget must be positive")
     if not math.isfinite(duration) or duration < 0:
         parser.error("--duration must be non-negative")
     if not math.isfinite(args.feedback_interval) or args.feedback_interval <= 0:
@@ -1293,6 +1489,7 @@ def main(argv=None):
             total_devices=total_devices,
             num_zones=num_zones,
             tick_rate_hz=args.tick_rate,
+            packet_budget_per_tick=args.packet_budget,
             preset_name=args.preset,
             rate_multiplier=args.rate_mult,
             feedback_interval_sec=args.feedback_interval,

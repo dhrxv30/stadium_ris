@@ -188,6 +188,14 @@ class OOBController:
                       cmd.cmd_id, panel_id, codebook_index, reason)
         return cmd
 
+    def can_issue_command(self, panel_id: str) -> bool:
+        """Return whether the panel has room for another non-terminal command."""
+        active = self._panel_active.get(panel_id, set())
+        active_count = sum(
+            1 for cmd_id in active if not self._commands[cmd_id].is_terminal()
+        )
+        return active_count < self.params.max_pending_per_panel
+
     async def transmit_and_await_ack(self, cmd: OOBCommand,
                                       clock: Callable[[], float] = time.time) -> bool:
         """Drive one command through the simulated OOB channel until ACKED or FAILED.

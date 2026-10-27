@@ -14,11 +14,13 @@ Key design choices:
 All SINR/PER values produced here are SIMULATED (channel model outputs).
 """
 
-import time
 import logging
+import math
+import random
+import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple
+from dataclasses import dataclass
+from typing import Optional, List, Dict
 
 import numpy as np
 
@@ -46,6 +48,7 @@ class OptResult:
     # Channel metrics BEFORE the change (simulation)
     pre_sinr_db: Optional[float]
     pre_per: Optional[float]
+    observed_sinr_db: Optional[float] = None
 
     # Channel metrics AFTER the change (simulation; set after apply)
     post_sinr_db: Optional[float] = None
@@ -57,13 +60,14 @@ class OptResult:
     # Objective values (higher = better)
     baseline_objective: Optional[float] = None
     selected_objective: Optional[float] = None
+    predicted_sinr_gain_db: Optional[float] = None
 
 
 @dataclass
 class OptimizerPolicy:
     """Configuration for the RIS optimizer."""
     # Minimum SINR improvement (dB) required to trigger a config change
-    min_sinr_gain_db: float = 1.0
+    min_sinr_gain_db: float = 0.01
 
     # Cooldown between optimization runs for the same zone (seconds)
     cooldown_s: float = 5.0
@@ -100,14 +104,13 @@ class RISOptimizer:
         self.policy = policy or OptimizerPolicy()
         self.codebook_size = codebook_size
         self.evaluator = ChannelEvaluator(self.params, seed=seed)
+        self.seed = seed
         self.zone_centers = zone_centers or {}
         self.zone_nlos_flags = zone_nlos_flags or {}
         self.bs_pos = bs_pos if bs_pos is not None else np.array([0.0, 0.0, 10.0])
         self.log = logger or logging.getLogger("laptop_b.optimizer")
 
         self._last_opt_ts: Dict[str, float] = {}
-        self._applied_codebook: Dict[str, Optional[int]] = {}  # zone -> last applied
-        self._pre_sinr: Dict[str, Optional[float]] = {}        # zone -> SINR before last change
         self.history: List[OptResult] = []
         self.max_history = 200
 
@@ -138,28 +141,38 @@ class RISOptimizer:
 
         # Evaluate baseline (current config)
         baseline_cb = panels[0].codebook_index if panels else 0
-        baseline_link = self._eval_codebook(baseline_cb, active_pairs, zone_center, is_nlos)
+        receiver_positions, shadow_draws = self._evaluation_samples(zone_id, zone_center)
+        baseline_link = self._eval_codebook(
+            cb_idx=baseline_cb,
+            active_pairs=active_pairs,
+            receiver_positions=receiver_positions,
+            shadow_draws=shadow_draws,
+            is_nlos=is_nlos,
+        )
 
         # Evaluate all candidates
         best_cb = baseline_cb
         best_obj = self._objective(baseline_link)
-        candidate_results: List[Tuple[int, float, LinkResult]] = [
-            (baseline_cb, best_obj, baseline_link)
-        ]
-
+        best_link = baseline_link
         for cb_idx in range(self.codebook_size):
             if cb_idx == baseline_cb:
                 continue
-            link = self._eval_codebook(cb_idx, active_pairs, zone_center, is_nlos)
+            link = self._eval_codebook(
+                cb_idx=cb_idx,
+                active_pairs=active_pairs,
+                receiver_positions=receiver_positions,
+                shadow_draws=shadow_draws,
+                is_nlos=is_nlos,
+            )
             obj = self._objective(link)
-            candidate_results.append((cb_idx, obj, link))
             if obj > best_obj:
                 best_obj = obj
                 best_cb = cb_idx
+                best_link = link
 
         sinr_gain = best_obj - self._objective(baseline_link)
-        pre_sinr = current_sinr_db if current_sinr_db is not None else baseline_link.sinr_db
-        self._pre_sinr[zone_id] = pre_sinr
+        predicted_sinr_gain_db = best_link.sinr_db - baseline_link.sinr_db
+        pre_sinr = baseline_link.sinr_db
 
         opt_id = uuid.uuid4().hex[:12]
 
@@ -173,8 +186,13 @@ class RISOptimizer:
                 selected_codebook=best_cb,
                 pre_sinr_db=round(pre_sinr, 2),
                 pre_per=round(baseline_link.per, 4),
+                observed_sinr_db=(
+                    round(current_sinr_db, 2)
+                    if current_sinr_db is not None else None
+                ),
                 baseline_objective=round(self._objective(baseline_link), 2),
                 selected_objective=round(best_obj, 2),
+                predicted_sinr_gain_db=round(predicted_sinr_gain_db, 2),
             )
         else:
             result = OptResult(
@@ -186,8 +204,13 @@ class RISOptimizer:
                 selected_codebook=best_cb,
                 pre_sinr_db=round(pre_sinr, 2),
                 pre_per=round(baseline_link.per, 4),
+                observed_sinr_db=(
+                    round(current_sinr_db, 2)
+                    if current_sinr_db is not None else None
+                ),
                 baseline_objective=round(self._objective(baseline_link), 2),
                 selected_objective=round(best_obj, 2),
+                predicted_sinr_gain_db=round(predicted_sinr_gain_db, 2),
             )
 
         self._record(result)
@@ -214,11 +237,18 @@ class RISOptimizer:
         active_pairs = [(ps, g) for ps, g in zip(panels, geoms) if g is not None]
 
         cb = opt_result.selected_codebook
-        post_link = self._eval_codebook(cb, active_pairs, zone_center, is_nlos)
+        receiver_positions, shadow_draws = self._evaluation_samples(zone_id, zone_center)
+        post_link = self._eval_codebook(
+            cb_idx=cb,
+            active_pairs=active_pairs,
+            receiver_positions=receiver_positions,
+            shadow_draws=shadow_draws,
+            is_nlos=is_nlos,
+        )
         opt_result.post_sinr_db = round(post_link.sinr_db, 2)
         opt_result.post_per = round(post_link.per, 4)
 
-        pre = opt_result.pre_sinr_db or 0.0
+        pre = opt_result.pre_sinr_db if opt_result.pre_sinr_db is not None else 0.0
         gain = post_link.sinr_db - pre
         opt_result.improved = gain >= 0
 
@@ -243,30 +273,58 @@ class RISOptimizer:
         """Map codebook index to per-panel steering offsets (radians).
 
         Codebook index 0 = bore-sight (all zeros).
-        Subsequent indices spread the beam in discrete angular steps.
+        Subsequent indices steer toward the zone's receiver direction in discrete
+        angular steps. The channel model compares each candidate against the
+        receiver angle instead of treating every steering offset as attenuation.
         """
         if codebook_index == 0:
             return [0.0] * n_panels
         step = (math.pi / 4) / (self.codebook_size - 1)
         offset = step * codebook_index
-        # Alternate sign across panels for diversity
-        return [offset * (1 if i % 2 == 0 else -1) for i in range(n_panels)]
+        return [offset] * n_panels
 
-    def _eval_codebook(self, cb_idx: int, active_pairs, zone_center, is_nlos) -> LinkResult:
+    def _evaluation_samples(self, zone_id: str, zone_center: np.ndarray):
+        """Return a repeatable set of receiver positions and shadow draws per zone."""
+        zone_seed = self.seed + sum((i + 1) * ord(char) for i, char in enumerate(zone_id))
+        rng = random.Random(zone_seed)
+        positions = []
+        shadows = []
+        for _ in range(max(1, self.policy.n_channel_samples)):
+            positions.append(zone_center + np.array([
+                rng.uniform(-20, 20),
+                rng.uniform(-20, 20),
+                0.0,
+            ]))
+            shadows.append(rng.gauss(0.0, self.params.shadow_std_db))
+        return positions, shadows
+
+    def _eval_codebook(
+        self,
+        cb_idx: int,
+        active_pairs,
+        receiver_positions: List[np.ndarray],
+        shadow_draws: List[float],
+        is_nlos: bool,
+    ) -> LinkResult:
         angles = self._codebook_steering_angles(cb_idx, len(active_pairs))
-        return self.evaluator.evaluate_zone_mean(
-            zone_id="",              # not used inside evaluate_zone_mean directly
-            panel_registry=None,    # we pass active_pairs directly below
-            zone_center_pos=zone_center,
-            bs_pos=self.bs_pos,
-            is_nlos=is_nlos,
-            n_samples=self.policy.n_channel_samples,
-        ) if not active_pairs else self._eval_with_pairs(
-            cb_idx, active_pairs, zone_center, is_nlos, angles
+        return self._eval_with_pairs(
+            cb_idx,
+            active_pairs,
+            receiver_positions,
+            shadow_draws,
+            is_nlos,
+            angles,
         )
 
-    def _eval_with_pairs(self, cb_idx, active_pairs, zone_center, is_nlos, angles) -> LinkResult:
-        # Set all panels in the active_pairs to the candidate codebook index temporarily
+    def _eval_with_pairs(
+        self,
+        cb_idx,
+        active_pairs,
+        receiver_positions,
+        shadow_draws,
+        is_nlos,
+        angles,
+    ) -> LinkResult:
         from copy import copy
         temp_pairs = []
         for ps, g in active_pairs:
@@ -274,12 +332,28 @@ class RISOptimizer:
             ps_copy.codebook_index = cb_idx
             temp_pairs.append((ps_copy, g))
 
-        return self.evaluator.evaluate(
-            receiver_pos=zone_center,
-            bs_pos=self.bs_pos,
-            active_panels=temp_pairs,
-            codebook_angles=angles,
+        results = [
+            self.evaluator.evaluate(
+                receiver_pos=receiver_pos,
+                bs_pos=self.bs_pos,
+                active_panels=temp_pairs,
+                codebook_angles=angles,
+                is_nlos=is_nlos,
+                shadow_draw=shadow,
+            )
+            for receiver_pos, shadow in zip(receiver_positions, shadow_draws)
+        ]
+        return LinkResult(
+            direct_rx_dbm=round(float(np.mean([r.direct_rx_dbm for r in results])), 2),
+            ris_rx_dbm=round(float(np.mean([
+                r.ris_rx_dbm for r in results if r.ris_rx_dbm is not None
+            ])), 2) if any(r.ris_rx_dbm is not None for r in results) else None,
+            total_rx_dbm=round(float(np.mean([r.total_rx_dbm for r in results])), 2),
+            noise_dbm=round(float(np.mean([r.noise_dbm for r in results])), 2),
+            sinr_db=round(float(np.mean([r.sinr_db for r in results])), 2),
+            per=round(float(np.mean([r.per for r in results])), 4),
             is_nlos=is_nlos,
+            shadow_db=round(float(np.mean([r.shadow_db for r in results])), 2),
         )
 
     def _record(self, r: OptResult):
@@ -293,7 +367,3 @@ class RISOptimizer:
             if r.zone_id not in result:
                 result[r.zone_id] = r
         return result
-
-
-# Needed for math.pi in _codebook_steering_angles
-import math

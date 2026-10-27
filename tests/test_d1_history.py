@@ -137,6 +137,7 @@ class TestSupervisorTick(unittest.TestCase):
             sup._last_tick_mono = 0.0
             sup.tick(min_interval_s=0.0)
         self.assertEqual(len(sup._history_pdr), maxlen)
+        self.assertEqual(len(sup._history_rolling_plr), maxlen)
         for zid in ZONE_IDS:
             self.assertEqual(len(sup._history_queue_pct[zid]), maxlen)
             self.assertEqual(len(sup._history_sinr[zid]), maxlen)
@@ -166,7 +167,7 @@ class TestSupervisorGetView(unittest.TestCase):
     def test_get_view_history_zone_keys(self):
         sup = self._fresh()
         hist = sup.get_view()["history"]
-        for key in ("pdr", "queue_pct", "sinr", "oob_ack_ratio"):
+        for key in ("pdr", "rolling_plr", "queue_pct", "sinr", "oob_ack_ratio"):
             self.assertIn(key, hist)
         for zid in ZONE_IDS:
             self.assertIn(zid, hist["queue_pct"])

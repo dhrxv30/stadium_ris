@@ -74,6 +74,7 @@ def _make_telemetry_b_oob(cmds=20, acked=19):
 try:
     from laptop_c.dashboard.app import (
         _na,
+        _congestion_tone,
         _health_color,
         _congestion_color,
         _panel_status_color,
@@ -83,6 +84,12 @@ try:
     _APP_IMPORTABLE = True
 except Exception:
     _APP_IMPORTABLE = False
+
+try:
+    from laptop_c.dashboard.app import _congestion_tone
+    _CONGESTION_TONE_IMPORTABLE = True
+except Exception:
+    _CONGESTION_TONE_IMPORTABLE = False
 
 
 # ── 1. Helper function unit tests ──────────────────────────────────────────────
@@ -108,6 +115,14 @@ class TestDashboardHelpers(unittest.TestCase):
     @unittest.skipUnless(_APP_IMPORTABLE, "dashboard.app not importable")
     def test_na_zero_not_na(self):
         self.assertEqual(_na(0), "0")
+
+    @unittest.skipUnless(_CONGESTION_TONE_IMPORTABLE, "dashboard.app not importable")
+    def test_congestion_tones_match_controller_states(self):
+        self.assertEqual(_congestion_tone("NORMAL"), "green")
+        self.assertEqual(_congestion_tone("MODERATE"), "yellow")
+        self.assertEqual(_congestion_tone("CONGESTED"), "red")
+        self.assertEqual(_congestion_tone("SEVERE"), "red")
+        self.assertEqual(_congestion_tone("UNKNOWN"), "gray")
 
     @unittest.skipUnless(_APP_IMPORTABLE, "dashboard.app not importable")
     def test_health_color_connected(self):
@@ -169,6 +184,7 @@ class TestAllNASnapshot(unittest.TestCase):
         self.assertIsNone(snap["random_seed"])
         self.assertIsNone(snap["overall_metrics"]["pdr_pct"])
         self.assertIsNone(snap["overall_metrics"]["plr_pct"])
+        self.assertIsNone(snap["overall_metrics"]["rolling_plr_pct"])
         self.assertIsNone(snap["oob"]["ack_ratio_pct"])
         for zid in ZONE_IDS:
             z = snap["zones"][zid]
@@ -181,6 +197,7 @@ class TestAllNASnapshot(unittest.TestCase):
         """History lists must be empty before tick() is ever called."""
         view = self.sup.get_view()
         self.assertEqual(view["history"]["pdr"], [])
+        self.assertEqual(view["history"]["rolling_plr"], [])
         for zid in ZONE_IDS:
             self.assertEqual(view["history"]["queue_pct"][zid], [])
             self.assertEqual(view["history"]["sinr"][zid], [])

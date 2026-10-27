@@ -179,6 +179,7 @@ class MetricsRegistry:
     def record_throughput(self, payload_bytes: int) -> None:
         with self._lock:
             self._throughput_window.append((time.time(), payload_bytes))
+            self._counters["payload_bytes_delivered"] += payload_bytes
 
     def record_drop(self, reason: str) -> None:
         with self._lock:
@@ -296,8 +297,9 @@ class MetricsRegistry:
                 )
             )
 
-            pdr = delivered / gen if gen > 0 else 0.0
-            loss = dropped / gen if gen > 0 else 0.0
+            final_outcomes = delivered + dropped
+            pdr = delivered / final_outcomes if final_outcomes > 0 else 0.0
+            loss = dropped / final_outcomes if final_outcomes > 0 else 0.0
 
             zone_data = {}
             for z in range(self.num_zones):
@@ -305,6 +307,7 @@ class MetricsRegistry:
                 z_gen = zc.get("pdu_generated", 0)
                 z_del = zc.get("pdu_delivered", 0)
                 z_drop = zc.get("pdu_dropped", 0)
+                z_final_outcomes = z_del + z_drop
                 z_attempt_failed = zc.get("pdu_attempt_failed", 0)
                 z_acked = zc.get("pdu_acked", 0)
                 z_nacked = zc.get("pdu_nacked", 0)
@@ -313,11 +316,15 @@ class MetricsRegistry:
                     "generated": z_gen,
                     "delivered": z_del,
                     "dropped": z_drop,
+                    "final_outcomes": z_final_outcomes,
                     "attempt_failed": z_attempt_failed,
                     "acked": z_acked,
                     "nacked": z_nacked,
                     "retransmitted": z_retx,
-                    "pdr": round(z_del / z_gen, 4) if z_gen > 0 else 0.0,
+                    "pdr": (
+                        round(z_del / z_final_outcomes, 4)
+                        if z_final_outcomes > 0 else 0.0
+                    ),
                     "latency": self._zone_latency[z].snapshot(),
                     "queue_ul": self._queue_depths.get(f"ul_z{z}", 0),
                     "queue_dl": self._queue_depths.get(f"dl_z{z}", 0),
@@ -331,6 +338,7 @@ class MetricsRegistry:
                     "pdu_generated": gen,
                     "pdu_delivered": delivered,
                     "pdu_dropped": dropped,
+                    "pdu_final_outcomes": final_outcomes,
                     "pdu_acked": self._counters.get("pdu_acked", 0),
                     "pdu_nacked": self._counters.get("pdu_nacked", 0),
                     "pdu_attempt_failed": self._counters.get("pdu_attempt_failed", 0),
@@ -340,6 +348,9 @@ class MetricsRegistry:
                     "pdu_pending": pending,
                     "pdr": round(pdr, 4),
                     "loss_ratio": round(loss, 4),
+                    "payload_bytes_delivered": self._counters.get(
+                        "payload_bytes_delivered", 0
+                    ),
                     "throughput_bps": round(self._throughput_bps_unlocked()),
                     "latency": self._global_latency.snapshot(),
                     "drop_reasons": dict(self._drop_reasons),
@@ -351,6 +362,8 @@ class MetricsRegistry:
                     "feedback_zone_messages_sent": self._counters.get("feedback_zone_messages_sent", 0),
                     "feedback_reports_expired": self._counters.get("feedback_reports_expired", 0),
                     "ris_updates_received": self._counters.get("ris_updates_received", 0),
+                    "scheduling_updates_received": self._counters.get("scheduling_updates_received", 0),
+                    "control_updates_rejected": self._counters.get("control_updates_rejected", 0),
                     "supervisory_overrides": self._counters.get("supervisory_overrides", 0),
                 },
                 "network": {
@@ -437,6 +450,8 @@ class MetricsRegistry:
             f"  OOB  — Feedback: {snap['oob']['feedback_reports_sent']}  │"
             f"  Windows: {snap['oob']['feedback_windows_completed']}  │"
             f"  RIS Upd: {snap['oob']['ris_updates_received']}  │"
+            f"  Sched Upd: {snap['oob']['scheduling_updates_received']}  │"
+            f"  Rejected: {snap['oob']['control_updates_rejected']}  │"
             f"  Overrides: {snap['oob']['supervisory_overrides']}"
         )
         lines.append(
@@ -494,6 +509,7 @@ class MetricsRegistry:
             w = csv.writer(fh)
             w.writerow([
                 "zone", "generated_pdus", "delivered_pdus", "terminal_drops",
+                "final_outcomes",
                 "acked", "nacked", "failed_attempts", "retransmitted_pdus", "pdr",
                 "mean_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
                 "queue_ul_pdus", "queue_dl_pdus",
@@ -502,6 +518,7 @@ class MetricsRegistry:
                 lat = zd["latency"]
                 w.writerow([
                     z_name, zd["generated"], zd["delivered"], zd["dropped"],
+                    zd["final_outcomes"],
                     zd["acked"], zd["nacked"], zd["attempt_failed"],
                     zd["retransmitted"], zd["pdr"],
                     lat["mean_ms"], lat["p50_ms"], lat["p95_ms"], lat["p99_ms"],

@@ -42,7 +42,7 @@ class TestCongestionScheduler:
             (CONGESTION_NORMAL, "HOLD"),
             (CONGESTION_MODERATE, "BOOST"),
             (CONGESTION_CONGESTED, "BOOST"),
-            (CONGESTION_SEVERE, "THROTTLE"),
+            (CONGESTION_SEVERE, "BOOST_SERVICE"),
         ]
         for state, expected_action in cases:
             # bypass cooldown by using fresh scheduler per case
@@ -101,7 +101,7 @@ class TestCongestionScheduler:
         # Force CONGESTED state explicitly
         zone = _zone("Z1", CONGESTION_CONGESTED, queue_ratio=0.75, pdr=0.80)
         dec = sched.decide("Z1", zone)
-        assert dec.action in ("BOOST", "THROTTLE")
+        assert dec.action in ("BOOST", "BOOST_SERVICE")
 
     def test_make_scheduler_factory(self):
         s1 = make_scheduler("baseline")

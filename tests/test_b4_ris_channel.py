@@ -88,6 +88,38 @@ class TestChannelEvaluator:
         r_nlos = ev.evaluate(rx, bs, [], is_nlos=True)
         assert r_nlos.direct_rx_dbm < r_los.direct_rx_dbm
 
+    def test_signed_shadowing_allows_beneficial_and_damaging_conditions(self):
+        ev = self._build_eval()
+        rx = np.array([40.0, 0.0, 0.0])
+        bs = np.array([0.0, 0.0, 10.0])
+        nominal = ev.evaluate(rx, bs, [], shadow_draw=0.0)
+        improved = ev.evaluate(rx, bs, [], shadow_draw=-6.0)
+        degraded = ev.evaluate(rx, bs, [], shadow_draw=6.0)
+        assert improved.direct_rx_dbm > nominal.direct_rx_dbm
+        assert degraded.direct_rx_dbm < nominal.direct_rx_dbm
+
+    def test_steered_codebook_improves_zone_aligned_link(self):
+        ev = self._build_eval()
+        registry = self._build_registry()
+        panels = registry.by_zone("Z1")
+        geoms = [registry.geometries[p.panel_id] for p in panels]
+        receiver = np.array([0.0, 100.0, 15.0])
+        bs = np.array([0.0, 0.0, 40.0])
+        baseline = ev.evaluate(
+            receiver_pos=receiver,
+            bs_pos=bs,
+            active_panels=list(zip(panels, geoms)),
+            codebook_angles=[0.0] * len(panels),
+        )
+        steered = ev.evaluate(
+            receiver_pos=receiver,
+            bs_pos=bs,
+            active_panels=list(zip(panels, geoms)),
+            codebook_angles=[math.radians(20.0)] * len(panels),
+        )
+
+        assert steered.ris_rx_dbm > baseline.ris_rx_dbm
+
     def test_per_sigmoid_at_threshold(self):
         """PER should be approximately 0.5 at sinr_threshold_db."""
         params = ChannelModelParams(

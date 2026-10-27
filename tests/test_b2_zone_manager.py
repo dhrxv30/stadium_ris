@@ -90,6 +90,20 @@ class TestB2ZoneManager:
         zm.process_feedback(msg)
         assert zm.zones["Z3"].pdr == pytest.approx(80 / 100)
 
+    def test_pdr_excludes_generated_but_pending_packets(self):
+        zm = _make_manager()
+        msg = _make_feedback(
+            "Z4",
+            seq=1,
+            generated=100,
+            delivered=45,
+            dropped=5,
+        )
+
+        zm.process_feedback(msg)
+
+        assert zm.zones["Z4"].pdr == pytest.approx(45 / 50)
+
     def test_history_appended(self):
         zm = _make_manager()
         for i in range(1, 4):
@@ -117,11 +131,12 @@ class TestB2CongestionClassification:
         policy = CongestionPolicy(hysteresis_up=1, hysteresis_down=1)
         zm = ZoneManager(["Z1"], stale_after_s=5.0, congestion_policy=policy)
         qo = int(qr * 1000)
+        delivered = int(pdr * 100) if pdr is not None else 100
         payload = {
             "seq": 1, "window_start": time.time() - 1, "window_end": time.time(),
             "queue_occupancy": qo, "queue_capacity": 1000,
-            "generated": 100, "delivered": int(pdr * 100) if pdr else 90,
-            "dropped": 100 - (int(pdr * 100) if pdr else 90),
+            "generated": 100, "delivered": delivered,
+            "dropped": 100 - delivered,
         }
         from common.messages import make_message
         from common.constants import MSG_FEEDBACK_REPORT
@@ -190,4 +205,30 @@ class TestB2CongestionClassification:
         from common.constants import MSG_FEEDBACK_REPORT
         msg = make_message(MSG_FEEDBACK_REPORT, "A", "B", "r1", payload, zone_id="Z3")
         zm.process_feedback(msg)
+        assert "Z3" in zm.zones_needing_action()
+
+    def test_small_pdr_loss_escalates_to_actionable_congestion(self):
+        zm = _make_manager()
+        for seq, delivered, dropped in (
+            (1, 994, 6),
+            (2, 994, 6),
+            (3, 979, 21),
+            (4, 979, 21),
+        ):
+            msg = _make_feedback(
+                "Z3",
+                seq=seq,
+                queue_occupancy=100,
+                queue_capacity=1000,
+                generated=1000,
+                delivered=delivered,
+                dropped=dropped,
+            )
+            assert zm.process_feedback(msg)[0] == ACCEPTED
+
+            if seq == 2:
+                assert zm.zones["Z3"].congestion_state == CONGESTION_MODERATE
+                assert "Z3" not in zm.zones_needing_action()
+
+        assert zm.zones["Z3"].congestion_state == CONGESTION_CONGESTED
         assert "Z3" in zm.zones_needing_action()

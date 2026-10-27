@@ -54,7 +54,7 @@ class ChannelConfig:
     # Delivery
     min_sinr_db: float = -5.0          # below this → guaranteed loss
     # Interference
-    inter_zone_interference_db: float = 3.0  # baseline inter-zone interference
+    inter_zone_interference_db: float = 44.0  # loaded-stadium simulation baseline
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +151,23 @@ class ReceiverModel:
 
     # ----- RIS state management (integration with Laptop B) -----
 
+    def _phase_to_gain_db(self, phase: int) -> float:
+        """Convert a simulated codebook phase state into a per-panel gain estimate.
+
+        This keeps the A-side channel model responsive to B's codebook decisions,
+        while remaining a software simulation rather than RF calibration.
+        """
+        if phase is None:
+            return 0.0
+        phase = int(phase)
+        if phase <= 3:
+            return 0.0
+        # Keep this contribution deliberately modest so the explicit zone-level
+        # offset remains the primary control signal in the model.
+        max_phase = 7  # default codebook range used by the RIS optimizer
+        normalized = max(0.0, (phase - 3) / max(1, max_phase - 3))
+        return min(self.cfg.ris_max_gain_db * 0.25 * normalized, 3.0)
+
     def apply_ris_update(self, update: dict) -> bool:
         """
         Apply a RIS state update received from Laptop B.
@@ -175,6 +192,8 @@ class ReceiverModel:
                 continue
             if "phase" in p:
                 self.ris_state[pid]["phase"] = p["phase"]
+                if "gain_db" not in p:
+                    self.ris_state[pid]["gain_db"] = self._phase_to_gain_db(p["phase"])
             if "gain_db" in p:
                 self.ris_state[pid]["gain_db"] = min(p["gain_db"], self.cfg.ris_max_gain_db)
             if "target_zones" in p:
@@ -382,11 +401,11 @@ class ReceiverModel:
         """Recompute BTS distances after device positions have changed."""
         self._recompute_distances()
 
-    # ----- zone SINR offset (Laptop B scheduling integration) -----
+    # ----- zone SINR offset (Laptop B control integration) -----
 
     def set_zone_sinr_offset(self, zone_id: int, offset_db: float) -> None:
         """
-        Apply a per-zone SINR offset, e.g., to model Laptop B's scheduling
-        decision to allocate more power or resources to a congested zone.
+        Apply a per-zone simulated channel adjustment predicted by Laptop B's
+        RIS model. This is a model input, not a physical measurement.
         """
         self.zone_sinr_offset[zone_id] = offset_db

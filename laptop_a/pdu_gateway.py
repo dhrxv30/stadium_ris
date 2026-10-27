@@ -252,6 +252,7 @@ class PDUGateway:
             self.zone_weights = self._normalise(zone_weights)
         else:
             self.zone_weights = {z: 1.0 / num_zones for z in range(num_zones)}
+        self.zone_service_multipliers = {z: 1.0 for z in range(num_zones)}
 
         # Round-robin state
         self._rr_index: int = 0
@@ -342,9 +343,16 @@ class PDUGateway:
                 result.extend(queues[z].dequeue(per_zone))
 
         elif self.schedule_policy == SchedulePolicy.WEIGHTED:
+            extra_service: List[dict] = []
             for z in range(self.num_zones):
                 n = max(1, int(total_count * self.zone_weights.get(z, 0.2)))
                 result.extend(queues[z].dequeue(n))
+                extra_n = int(
+                    n * (self.zone_service_multipliers.get(z, 1.0) - 1.0)
+                )
+                if extra_n:
+                    extra_service.extend(queues[z].dequeue(extra_n))
+            return result[:total_count] + extra_service
 
         elif self.schedule_policy == SchedulePolicy.PRIORITY:
             for z in range(self.num_zones):
@@ -361,6 +369,10 @@ class PDUGateway:
     def set_zone_weights(self, weights: Dict[int, float]) -> None:
         """Update zone scheduling weights (e.g., from Laptop B congestion decisions)."""
         self.zone_weights = self._normalise(weights)
+
+    def set_zone_service_multipliers(self, multipliers: Dict[int, float]) -> None:
+        """Set per-zone extra service; each weighted allocation is capped at 2x."""
+        self.zone_service_multipliers = dict(multipliers)
 
     def set_queue_sizes(self, ul_size: int, dl_size: int) -> None:
         """Resize all queues (new size applies to future enqueues)."""

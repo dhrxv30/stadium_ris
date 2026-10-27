@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 import numpy as np
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable, Awaitable
 
 from laptop_b.zone_manager import ZoneManager, CONGESTION_CONGESTED, CONGESTION_SEVERE
 from laptop_b.scheduler import CongestionScheduler, SchedulerDecision
@@ -19,11 +19,11 @@ from laptop_b.oob_controller import OOBController, OOBChannelParams, OOBCommand
 
 # Default stadium geometry (synthetic; configurable via constructor)
 _DEFAULT_ZONE_CENTERS = {
-    "Z1": np.array([ 40.0,   0.0, 0.0]),
-    "Z2": np.array([  0.0,  40.0, 0.0]),
-    "Z3": np.array([-40.0,   0.0, 0.0]),
-    "Z4": np.array([  0.0, -40.0, 0.0]),
-    "Z5": np.array([  0.0,   0.0, 0.0]),   # centre field
+    "Z1": np.array([0.0, 100.0, 15.0]),
+    "Z2": np.array([100.0, 0.0, 20.0]),
+    "Z3": np.array([0.0, -100.0, 15.0]),
+    "Z4": np.array([-100.0, 0.0, 20.0]),
+    "Z5": np.array([0.0, 0.0, 5.0]),
 }
 
 _DEFAULT_NLOS = {
@@ -55,7 +55,10 @@ class ClosedLoopEngine:
                  oob_controller: OOBController,
                  logger: Optional[logging.Logger] = None,
                  closed_loop_enabled: bool = True,
-                 optimize_interval_s: float = 5.0):
+                 optimize_interval_s: float = 5.0,
+                 control_update_sender: Optional[
+                     Callable[[dict], Awaitable[bool]]
+                 ] = None):
         self.zones = zone_manager
         self.scheduler = scheduler
         self.panels = panel_registry
@@ -64,6 +67,7 @@ class ClosedLoopEngine:
         self.log = logger or logging.getLogger("laptop_b.closed_loop")
         self.closed_loop_enabled = closed_loop_enabled
         self.optimize_interval_s = optimize_interval_s
+        self.control_update_sender = control_update_sender
 
         self._last_optimize_ts: Dict[str, float] = {}
         self._pending_opt_results: Dict[str, OptResult] = {}  # cmd_id -> OptResult
@@ -107,6 +111,38 @@ class ClosedLoopEngine:
                 zone.last_decision = f"{dec.action}(w={dec.token_weight:.2f})"
                 zone.last_decision_ts = dec.ts
 
+        if self.control_update_sender:
+            zone_weights = {
+                decision.zone_id: decision.token_weight
+                for decision in all_decisions
+            }
+            schedule_policy = (
+                "weighted"
+                if getattr(self.scheduler, "NAME", "") == "CONGESTION_AWARE"
+                else "round_robin"
+            )
+            service_multiplier = (
+                self.scheduler.policy.severe_service_multiplier
+                if getattr(self.scheduler, "NAME", "") == "CONGESTION_AWARE"
+                else 1.0
+            )
+            schedule_update = {
+                "message_type": "SCHEDULING_UPDATE",
+                "update_id": f"schedule-{time.time_ns()}",
+                "zone_weights": zone_weights,
+                "schedule_policy": schedule_policy,
+                "zone_service_multipliers": {
+                    decision.zone_id: (
+                        service_multiplier
+                        if decision.congestion_state == CONGESTION_SEVERE
+                        else 1.0
+                    )
+                    for decision in all_decisions
+                },
+            }
+            if not await self.control_update_sender(schedule_update):
+                self.log.warning("Laptop A did not acknowledge scheduling update")
+
         if not zones_to_act:
             self.log.debug("Closed-loop iteration: no congested zones")
             return
@@ -124,9 +160,26 @@ class ClosedLoopEngine:
             if opt_result is None or opt_result.decision != "APPLY":
                 continue
 
-            # Step 7: Issue OOB commands for panels in this zone
+            # The optimizer evaluates all panels in the zone, so update them as
+            # one acknowledged group rather than applying its gain to one panel.
             zone_panels = self.panels.by_zone(zone_id)
-            for panel in zone_panels[:1]:   # issue to first panel per zone (scalable)
+            if any(panel.health != "OK" for panel in zone_panels):
+                self.log.warning(
+                    "Skipping RIS update for %s because a zone panel is unhealthy",
+                    zone_id,
+                )
+                continue
+            if any(
+                not self.oob.can_issue_command(panel.panel_id)
+                for panel in zone_panels
+            ):
+                self.log.info(
+                    "Skipping RIS update for %s while a panel command is pending",
+                    zone_id,
+                )
+                continue
+            commands = []
+            for panel in zone_panels:
                 cmd = self.oob.issue_command(
                     panel_id=panel.panel_id,
                     zone_id=zone_id,
@@ -136,44 +189,92 @@ class ClosedLoopEngine:
                     opt_id=opt_result.opt_id,
                 )
                 if cmd is None:
-                    continue  # duplicate protection triggered
+                    self.log.warning(
+                        "RIS update for %s could not reserve every panel command",
+                        zone_id,
+                    )
+                    return
+                commands.append(cmd)
 
-                # Steps 7-10: Transmit via simulated OOB channel
+            if commands:
                 asyncio.create_task(
-                    self._drive_command(cmd, opt_result, zone_id)
+                    self._drive_zone_commands(commands, opt_result, zone_id)
                 )
 
-    async def _drive_command(self, cmd: OOBCommand, opt_result: OptResult, zone_id: str):
-        """Send command, await simulated ACK, apply panel config, evaluate post-update."""
-        success = await self.oob.transmit_and_await_ack(cmd)
+    async def _drive_zone_commands(
+        self,
+        commands: List[OOBCommand],
+        opt_result: OptResult,
+        zone_id: str,
+    ):
+        """Apply a zone codebook only after all panel and Laptop A acknowledgements."""
+        successes = await asyncio.gather(
+            *(self.oob.transmit_and_await_ack(cmd) for cmd in commands)
+        )
+        if not all(successes):
+            self.log.warning("RIS zone update failed OOB acknowledgement for %s", zone_id)
+            opt_result.improved = False
+            return
 
-        if success:
-            # Step 9: Apply configuration to the simulated RIS panel
-            applied = self.panels.apply_config(
-                cmd.target_panel_id, cmd.codebook_index, cmd.cmd_id
-            )
-            if applied:
-                self.log.info(
-                    "Panel %s updated to codebook=%d (simulated, step 9)",
-                    cmd.target_panel_id, cmd.codebook_index,
-                )
-                zone = self.zones.zones.get(zone_id)
-                if zone:
-                    zone.last_ris_update = (f"cb={cmd.codebook_index} "
-                                            f"cmd={cmd.cmd_id[:8]}")
-                    zone.last_ris_update_ts = time.time()
-
-                # Step 11: Evaluate post-update channel quality (simulated)
-                self.optimizer.evaluate_post_update(zone_id, opt_result, self.panels)
-            else:
-                self.log.warning("Panel %s apply_config returned False (health?)",
-                                 cmd.target_panel_id)
-        else:
+        zone_index = int(zone_id[1:]) - 1
+        ris_update = {
+            "message_type": "RIS_STATE_UPDATE",
+            "update_id": f"ris-{commands[0].cmd_id}",
+            "cmd_id": commands[0].cmd_id,
+            "config_version": commands[0].config_version,
+            "zone_id": zone_id,
+            "codebook_index": commands[0].codebook_index,
+            "zone_sinr_offset_db": opt_result.predicted_sinr_gain_db or 0.0,
+            "panels": [
+                {
+                    "panel_id": int(cmd.target_panel_id[1:]) - 1,
+                    "config_version": cmd.config_version,
+                    "phase": cmd.codebook_index,
+                    "gain_db": max(
+                        0.0,
+                        min(
+                            3.0,
+                            max(0.0, float(cmd.codebook_index - 3)) / max(1, self.optimizer.codebook_size - 3) * 3.0,
+                        ),
+                    ),
+                    "target_zones": [zone_index],
+                    "active": True,
+                }
+                for cmd in commands
+            ],
+        }
+        if self.control_update_sender and not await self.control_update_sender(ris_update):
             self.log.warning(
-                "OOB command %s FAILED for panel %s; no configuration change applied",
-                cmd.cmd_id, cmd.target_panel_id,
+                "Laptop A did not apply RIS zone update %s; B state remains unchanged",
+                zone_id,
             )
             opt_result.improved = False
+            return
+
+        for cmd in commands:
+            if not self.panels.apply_config(
+                cmd.target_panel_id, cmd.codebook_index, cmd.cmd_id
+            ):
+                self.log.error(
+                    "Panel %s acknowledged update but could not apply it",
+                    cmd.target_panel_id,
+                )
+                opt_result.improved = False
+                return
+
+        self.log.info(
+            "Zone %s panels updated to codebook=%d (simulated)",
+            zone_id,
+            commands[0].codebook_index,
+        )
+        zone = self.zones.zones.get(zone_id)
+        if zone:
+            zone.last_ris_update = (
+                f"cb={commands[0].codebook_index} "
+                f"panels={len(commands)}"
+            )
+            zone.last_ris_update_ts = time.time()
+        self.optimizer.evaluate_post_update(zone_id, opt_result, self.panels)
 
     def summary_lines(self) -> List[str]:
         """Return recent closed-loop event lines for terminal display."""

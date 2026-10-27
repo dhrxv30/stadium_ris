@@ -19,6 +19,7 @@ bandwidth_hz: 20000000.0    # 20 MHz
 # Optimizer
 optimizer_cooldown_s: 5.0   # minimum seconds between optimization runs per zone
 optimizer_interval_s: 5.0   # how often the closed-loop engine iterates
+optimizer_min_sinr_gain_db: 0.01  # minimum displayed model gain before applying a codebook
 
 # OOB channel parameters (SOFTWARE SIMULATION; not a real Sub-GHz radio link)
 oob_delay_s: 0.05           # one-way simulated OOB delay (seconds)

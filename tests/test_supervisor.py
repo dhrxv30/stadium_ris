@@ -117,6 +117,7 @@ class TestSupervisorState(unittest.TestCase):
                     "pending_dl": 4,
                     "queue_occupancy": 15,
                     "queue_capacity": 500,
+                    "service_multiplier": 2.0,
                     "sinr_db": 18.5,
                     "estimated_per": 0.015,
                     "mean_latency_ms": 16.2,
@@ -159,7 +160,40 @@ class TestSupervisorState(unittest.TestCase):
         self.assertEqual(z1.sinr_db, 18.5)
         self.assertEqual(z1.queue_occupancy, 15)
         self.assertEqual(z1.queue_capacity, 500)
+        self.assertEqual(z1.service_multiplier, 2.0)
         self.assertAlmostEqual(z1.queue_occupancy_pct, 3.0, places=1)
+
+    def test_rolling_loss_rate_uses_recent_counter_deltas(self):
+        sup = Supervisor(run_id="run-rolling-loss")
+
+        sup.process_telemetry_a(
+            {
+                "traffic_summary": {
+                    "uplink": {"delivered": 90, "dropped": 10},
+                    "downlink": {"delivered": 0, "dropped": 0},
+                }
+            },
+            ts=time.time(),
+        )
+        first_rate = sup.snapshot()["overall_metrics"]["rolling_plr_pct"]
+        self.assertEqual(first_rate, 10.0)
+
+        sup.process_telemetry_a(
+            {
+                "traffic_summary": {
+                    "uplink": {"delivered": 190, "dropped": 11},
+                    "downlink": {"delivered": 0, "dropped": 0},
+                }
+            },
+            ts=time.time(),
+        )
+        metrics = sup.snapshot()["overall_metrics"]
+        self.assertEqual(sup.total_dropped, 11)
+        self.assertLess(metrics["rolling_plr_pct"], first_rate)
+        self.assertAlmostEqual(metrics["rolling_plr_pct"], 11 / 201 * 100)
+
+        sup._refresh_rolling_plr(time.monotonic() + sup.ROLLING_LOSS_WINDOW_S + 1)
+        self.assertIsNone(sup.snapshot()["overall_metrics"]["rolling_plr_pct"])
 
     def test_process_telemetry_b_structured(self):
         sup = Supervisor(run_id="run-b-test")
@@ -341,6 +375,26 @@ class TestSupervisorIntegration(unittest.IsolatedAsyncioTestCase):
             await writer_b.wait_closed()
         finally:
             await col.stop()
+
+    def test_oob_ack_ratio_reads_laptop_b_counter_names(self):
+        sup = Supervisor(run_id="run-oob-counter-alias")
+        sup.process_telemetry_b(
+            {
+                "oob_metrics": {
+                    "commands_issued": 12,
+                    "commands_acked": 9,
+                    "unique_commands": 12,
+                    "acknowledged_commands": 9,
+                    "retries": 2,
+                    "timeouts": 1,
+                }
+            },
+            ts=1729700010.0,
+        )
+
+        self.assertEqual(sup.oob.unique_commands, 12)
+        self.assertEqual(sup.oob.acknowledged, 9)
+        self.assertEqual(sup.oob.ack_ratio, 75.0)
 
 
 if __name__ == "__main__":

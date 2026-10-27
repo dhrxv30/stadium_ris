@@ -1,7 +1,7 @@
 """Laptop C Supervisor Entry Point - Stages C1 to D5.
 
 Capabilities:
-- Stage C1: Dual TCP framed JSON telemetry listeners (ports 9101, 9102), connection health
+- Stage C1: Shared or per-peer TCP framed JSON telemetry listeners on Laptop C, with connection health and run-ID validation
 - Stage C2: Unified supervisor state model (50k devices, 5 zones, 32 RIS panels, UL/DL PDUs, OOB stats)
 - Stage C3: Live multi-pane terminal supervisor dashboard with event filtering and diagnostics
 - Stage C4: Automated CSV performance reports export (results/<run_id>/*.csv)

@@ -107,6 +107,7 @@ class ZoneState:
 
         # Controller / RIS state
         self.congestion_state = "NORMAL"  # NORMAL, ELEVATED, CONGESTED
+        self.service_multiplier: Optional[float] = None
         self.last_decision: Optional[str] = None
         self.last_ris_update: Optional[str] = None
         self.last_telemetry_ts: Optional[float] = None
@@ -175,6 +176,10 @@ class ZoneState:
 
         if "queue_capacity" in data and data["queue_capacity"] is not None:
             self.queue_capacity = safe_int(data["queue_capacity"])
+        if "service_multiplier" in data and data["service_multiplier"] is not None:
+            self.service_multiplier = safe_float(
+                data["service_multiplier"], self.service_multiplier
+            )
 
         if "generated" in data and "generated_dl" not in data:
             self.generated_dl = safe_int(data["generated"])
@@ -240,6 +245,7 @@ class ZoneState:
             "queue_occupancy": self.queue_occupancy,
             "queue_capacity": self.queue_capacity,
             "queue_occupancy_pct": self.queue_occupancy_pct,
+            "service_multiplier": self.service_multiplier,
             "sinr_db": self.sinr_db,
             "estimated_per": self.estimated_per,
             "mean_latency_ms": self.mean_latency_ms,
@@ -323,6 +329,12 @@ class OOBState:
                   "retries", "timeouts"):
             if k in data and data[k] is not None:
                 setattr(self, k, safe_int(data[k], getattr(self, k)))
+        if "acknowledged" not in data:
+            acknowledged = data.get(
+                "acknowledged_commands", data.get("commands_acked")
+            )
+            if acknowledged is not None:
+                self.acknowledged = safe_int(acknowledged, self.acknowledged)
         if "last_command_id" in data and data["last_command_id"] is not None:
             self.last_command_id = str(data["last_command_id"])
         if "last_command_status" in data and data["last_command_status"] is not None:
@@ -387,6 +399,7 @@ class Supervisor:
 
     # Maximum number of 1-Hz history samples to retain (~5 min at 1 Hz)
     HISTORY_MAXLEN: int = 300
+    ROLLING_LOSS_WINDOW_S: float = 10.0
 
     def __init__(self, run_id: Optional[str] = None, random_seed: Optional[Union[int, str]] = None):
         self.run_id = run_id
@@ -443,6 +456,8 @@ class Supervisor:
         self.overall_mean_latency_ms: Optional[float] = None
         self.overall_p95_latency_ms: Optional[float] = None
         self.overall_throughput_bps: Optional[float] = None
+        self._loss_samples = collections.deque(maxlen=120)
+        self._rolling_plr_pct: Optional[float] = None
 
         # OOB link model
         self.oob = OOBState()
@@ -453,6 +468,7 @@ class Supervisor:
 
         # D1: History buffers — sampled ~1/s by tick()
         self._history_pdr: HistoryBuffer = HistoryBuffer(self.HISTORY_MAXLEN)
+        self._history_rolling_plr: HistoryBuffer = HistoryBuffer(self.HISTORY_MAXLEN)
         # Per-zone queue occupancy pct  {zone_id -> HistoryBuffer}
         self._history_queue_pct: Dict[str, HistoryBuffer] = {
             zid: HistoryBuffer(self.HISTORY_MAXLEN) for zid in self.zones
@@ -534,6 +550,8 @@ class Supervisor:
 
     def process_telemetry_a(self, payload: dict, ts: float, zone_id: Optional[str] = None):
         """Process telemetry sent by Laptop A."""
+        previous_delivered = self.total_delivered
+        previous_dropped = self.total_dropped
         if payload.get("mock"):
             self._is_mock = True
         # 1. Device population update if reported
@@ -623,6 +641,53 @@ class Supervisor:
                 self.overall_p95_latency_ms = safe_float(m["p95_latency_ms"])
             if "throughput_bps" in m:
                 self.overall_throughput_bps = safe_float(m["throughput_bps"])
+
+        has_traffic_counters = (
+            isinstance(payload.get("traffic_summary"), dict)
+            or (
+                isinstance(payload.get("snapshot"), dict)
+                and isinstance(payload["snapshot"].get("global"), dict)
+            )
+            or any(key in payload for key in ("delivered", "dropped"))
+        )
+        if has_traffic_counters:
+            self._record_loss_sample(
+                previous_delivered,
+                previous_dropped,
+                self.total_delivered,
+                self.total_dropped,
+            )
+
+    def _record_loss_sample(
+        self,
+        previous_delivered: int,
+        previous_dropped: int,
+        delivered: int,
+        dropped: int,
+    ) -> None:
+        """Track terminal outcome counter deltas for a recent loss rate."""
+        now = time.monotonic()
+        if delivered < previous_delivered or dropped < previous_dropped:
+            self._loss_samples.clear()
+            delivered_delta, dropped_delta = delivered, dropped
+        else:
+            delivered_delta = delivered - previous_delivered
+            dropped_delta = dropped - previous_dropped
+
+        self._loss_samples.append((now, delivered_delta, dropped_delta))
+        self._refresh_rolling_plr(now)
+
+    def _refresh_rolling_plr(self, now: float) -> None:
+        cutoff = now - self.ROLLING_LOSS_WINDOW_S
+        while self._loss_samples and self._loss_samples[0][0] < cutoff:
+            self._loss_samples.popleft()
+
+        recent_delivered = sum(sample[1] for sample in self._loss_samples)
+        recent_dropped = sum(sample[2] for sample in self._loss_samples)
+        final_outcomes = recent_delivered + recent_dropped
+        self._rolling_plr_pct = (
+            recent_dropped / final_outcomes * 100.0 if final_outcomes else None
+        )
 
     def process_telemetry_b(
         self,
@@ -755,6 +820,7 @@ class Supervisor:
             "overall_metrics": {
                 "pdr_pct": self.pdr,
                 "plr_pct": self.plr,
+                "rolling_plr_pct": self._rolling_plr_pct,
                 "mean_latency_ms": self.overall_mean_latency_ms,
                 "p95_latency_ms": self.overall_p95_latency_ms,
                 "throughput_bps": self.overall_throughput_bps,
@@ -789,6 +855,8 @@ class Supervisor:
 
         # Global PDR (None when no packets have been finalised)
         self._history_pdr.append(self.pdr, ts)
+        self._refresh_rolling_plr(time.monotonic())
+        self._history_rolling_plr.append(self._rolling_plr_pct, ts)
 
         # Per-zone queue occupancy pct and SINR
         for zid, z in self.zones.items():
@@ -804,6 +872,7 @@ class Supervisor:
         """Return a plain-dict copy of all history buffers (safe to hand to dashboard)."""
         return {
             "pdr": self._history_pdr.as_list(),
+            "rolling_plr": self._history_rolling_plr.as_list(),
             "queue_pct": {
                 zid: buf.as_list() for zid, buf in self._history_queue_pct.items()
             },

@@ -81,7 +81,11 @@ def _health_tone(state: str) -> str:
 
 def _congestion_tone(state: str) -> str:
     s = (state or "").upper()
-    return "red" if s == "CONGESTED" else "yellow" if s == "ELEVATED" else "green"
+    if s in ("CONGESTED", "SEVERE"):
+        return "red"
+    if s in ("MODERATE", "ELEVATED"):
+        return "yellow"
+    return "green" if s == "NORMAL" else "gray"
 
 
 def _panel_health_tone(h: str) -> str:
@@ -379,15 +383,17 @@ class DashboardApp:
     def _build_stat_tiles(self, parent: tk.Frame) -> None:
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x")
-        specs = [("pdr", "Delivery rate"), ("plr", "Packet loss"),
-                 ("thr", "Throughput"),    ("lat", "Mean latency")]
+        specs = [("pdr", "Delivery rate"), ("plr", "Run loss"),
+                 ("rolling_plr", "Recent loss (10s)"),
+                 ("thr", "Throughput"), ("lat", "Mean latency")]
         subs: Dict[str, tk.Label] = {}
         vals: Dict[str, tk.Label] = {}
         for i, (key, title) in enumerate(specs):
             row.columnconfigure(i, weight=1, uniform="stat")
             card = Card(row, bg=BG)
             card.grid(row=0, column=i, sticky="nsew",
-                      padx=(0 if i == 0 else GAP // 2, 0 if i == 3 else GAP // 2))
+                      padx=(0 if i == 0 else GAP // 2,
+                            0 if i == len(specs) - 1 else GAP // 2))
             tk.Label(card.body, text=title, bg=SURFACE, fg=TEXT_DIM,
                      font=font(10)).pack(anchor="w")
             v = tk.Label(card.body, text="N/A", bg=SURFACE, fg=TEXT, font=font(24, "bold"))
@@ -396,9 +402,12 @@ class DashboardApp:
             s.pack(anchor="w")
             vals[key], subs[key] = v, s
         self._lbl_pdr, self._lbl_plr = vals["pdr"], vals["plr"]
+        self._lbl_rolling_plr = vals["rolling_plr"]
         self._lbl_thr, self._lbl_lat = vals["thr"], vals["lat"]
         self._lbl_lat_sub = subs["lat"]
-        self._lbl_pdr_sub, self._lbl_plr_sub, self._lbl_thr_sub = subs["pdr"], subs["plr"], subs["thr"]
+        self._lbl_pdr_sub = subs["pdr"]
+        self._lbl_plr_sub = subs["plr"]
+        self._lbl_thr_sub = subs["thr"]
 
     # Traffic ────────────────────────────────────────────────────────────────
 
@@ -448,6 +457,9 @@ class DashboardApp:
 
         self._lbl_pdr.config(text=_na(om.get("pdr_pct"), ".1f", "%"))
         self._lbl_plr.config(text=_na(om.get("plr_pct"), ".1f", "%"))
+        self._lbl_rolling_plr.config(
+            text=_na(om.get("rolling_plr_pct"), ".1f", "%")
+        )
         self._lbl_ack.config(
             text=f"ACK {pdu.get('ack_count', 0)}     NACK {pdu.get('nack_count', 0)}"
                  f"     Retries {pdu.get('retry_count', 0)}"
@@ -604,12 +616,14 @@ class DashboardApp:
         w_drop = _kv("Dropped",   2)
         w_sinr = _kv("SINR ¹",    3)
         w_per  = _kv("PER ¹",     4)
+        w_service = _kv("Service boost", 5)
 
         stale = Chip(cf, "Last known", "orange", bg=SURFACE, size=8, padx=8, pady=2)
         # packed on demand
 
         return dict(cong=cong, gen=w_gen, del_=w_del, drop=w_drop, pdr=w_pdr,
-                    qbar=qbar, queue=w_queue, sinr=w_sinr, per=w_per, stale=stale)
+                    qbar=qbar, queue=w_queue, sinr=w_sinr, per=w_per,
+                    service=w_service, stale=stale)
 
     def _update_zones(self, snap: Dict) -> None:
         zones = snap.get("zones", {})
@@ -645,6 +659,10 @@ class DashboardApp:
             else:
                 wmap["qbar"].set(None, T.GRAY)
             wmap["queue"].config(text=f"{_na(q_occ)}/{_na(q_cap)}", fg=dim)
+            wmap["service"].config(
+                text=_na(z.get("service_multiplier"), ".1f", "×"),
+                fg=dim,
+            )
             wmap["sinr"].config(text=_na(z.get("sinr_db"), ".1f", " dB"), fg=dim)
             wmap["per"].config( text=_na(z.get("estimated_per"), ".3f"),  fg=dim)
 
@@ -752,10 +770,13 @@ class DashboardApp:
             return c
 
         c_pdr   = _section("Delivery rate", "history ≈5 min at 1 Hz")
+        c_loss  = _section("Recent packet loss", "rolling 10s; terminal outcomes")
         c_queue = _section("Queue occupancy by zone", "simulated model output")
         c_sinr  = _section("SINR by zone", "simulated model output")
 
         self._chart_pdr   = SparklineChart(c_pdr, color="#1e8e3e", unit="%",
+                                           ymin=0.0, ymax=100.0)
+        self._chart_loss  = SparklineChart(c_loss, color="#d93025", unit="%",
                                            ymin=0.0, ymax=100.0)
         self._chart_queue = MultiLineChart(c_queue, unit="%", ymin=0.0, ymax=100.0)
         self._chart_sinr  = MultiLineChart(c_sinr,  unit=" dB")
@@ -763,6 +784,7 @@ class DashboardApp:
     def _update_charts(self, history: Dict) -> None:
         try:
             self._chart_pdr.update(  history.get("pdr", []))
+            self._chart_loss.update( history.get("rolling_plr", []))
             self._chart_queue.update(history.get("queue_pct", {}))
             self._chart_sinr.update( history.get("sinr", {}))
         except Exception:

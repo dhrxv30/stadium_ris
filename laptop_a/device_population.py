@@ -57,27 +57,40 @@ DEFAULT_BTS_POSITION = (0.0, 0.0, 40.0)
 
 # Default 32 RIS panel positions (distributed along the stadium catwalk)
 def _default_ris_panels(num_panels: int = 32) -> List[dict]:
-    """Generate default RIS panel positions evenly around the catwalk ring."""
+    """Generate panels in zone-aligned groups matching Laptop B's registry."""
     panels = []
     catwalk_radius = 110.0   # metres from centre
     catwalk_z = 30.0         # elevation
-    for i in range(num_panels):
-        angle = 2.0 * np.pi * i / num_panels
-        x = catwalk_radius * np.cos(angle)
-        y = catwalk_radius * np.sin(angle)
-        # Assign nearest two zones based on angle
-        zone_angles = [np.pi / 2, 0, -np.pi / 2, np.pi]  # N, E, S, W
-        dists = [abs(((angle - za + np.pi) % (2 * np.pi)) - np.pi) for za in zone_angles]
-        sorted_zones = sorted(range(4), key=lambda zi: dists[zi])
-        target_zones = sorted_zones[:2] + [4]  # Always include VIP zone
-        panels.append({
-            "panel_id": i,
-            "position": (round(x, 2), round(y, 2), catwalk_z),
-            "target_zones": target_zones,
-            "current_phase": 0,       # codebook index (0 = neutral)
-            "gain_db": 0.0,           # current effective gain
-            "active": True,
-        })
+    default_zone_counts = [7, 7, 6, 6, 6]
+    zone_counts = [
+        num_panels * count // sum(default_zone_counts)
+        for count in default_zone_counts
+    ]
+    for index in range(num_panels - sum(zone_counts)):
+        zone_counts[index % len(zone_counts)] += 1
+    zone_angles = [np.pi / 2, 0.0, -np.pi / 2, np.pi]
+    panel_id = 0
+    for zone_index, count in enumerate(zone_counts):
+        if zone_index < len(zone_angles):
+            angles = np.linspace(
+                zone_angles[zone_index] - np.pi / 8,
+                zone_angles[zone_index] + np.pi / 8,
+                count,
+            )
+        else:
+            angles = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False)
+        for angle in angles:
+            x = catwalk_radius * np.cos(angle)
+            y = catwalk_radius * np.sin(angle)
+            panels.append({
+                "panel_id": panel_id,
+                "position": (round(x, 2), round(y, 2), catwalk_z),
+                "target_zones": [zone_index],
+                "current_phase": 0,
+                "gain_db": 0.0,
+                "active": True,
+            })
+            panel_id += 1
     return panels
 
 

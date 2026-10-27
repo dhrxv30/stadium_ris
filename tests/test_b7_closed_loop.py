@@ -8,6 +8,7 @@ from laptop_b.zone_manager import (
 )
 from laptop_b.ris_channel import PanelRegistry, ChannelModelParams
 from laptop_b.ris_optimizer import RISOptimizer, OptimizerPolicy
+from laptop_b.ris_optimizer import OptResult
 from laptop_b.oob_controller import OOBController, OOBChannelParams
 from laptop_b.scheduler import CongestionScheduler, CongestionSchedulerPolicy
 from laptop_b.closed_loop import ClosedLoopEngine, _DEFAULT_ZONE_CENTERS, _DEFAULT_NLOS
@@ -16,7 +17,12 @@ from common.messages import make_message
 import numpy as np
 
 
-def _build_all(loss_prob=0.0, cooldown_s=0.0, optimize_interval_s=0.05):
+def _build_all(
+    loss_prob=0.0,
+    cooldown_s=0.0,
+    optimize_interval_s=0.05,
+    control_update_sender=None,
+):
     """Build a fully wired closed-loop system for testing."""
     zone_ids = ZONE_IDS
     zones = ZoneManager(zone_ids, stale_after_s=30.0,
@@ -43,6 +49,7 @@ def _build_all(loss_prob=0.0, cooldown_s=0.0, optimize_interval_s=0.05):
         oob_controller=oob,
         closed_loop_enabled=True,
         optimize_interval_s=optimize_interval_s,
+        control_update_sender=control_update_sender,
     )
     return zones, panels, scheduler, oob, optimizer, engine
 
@@ -69,6 +76,94 @@ def _inject_congested_zone(zones, zone_id="Z3"):
 class TestB7ClosedLoop:
 
     @pytest.mark.asyncio
+    async def test_scheduler_and_ris_updates_are_sent_to_laptop_a(self):
+        sent_updates = []
+
+        async def capture_update(message):
+            sent_updates.append(message)
+            return True
+
+        zones, panels, scheduler, oob, optimizer, engine = _build_all(
+            loss_prob=0.0,
+            control_update_sender=capture_update,
+        )
+        optimizer.optimize_zone = lambda zone_id, panel_registry, current_sinr_db=None: OptResult(
+            opt_id="test-opt",
+            zone_id=zone_id,
+            ts=time.time(),
+            decision="APPLY",
+            reason="deterministic integration test",
+            baseline_codebook=0,
+            selected_codebook=1,
+            pre_sinr_db=4.0,
+            pre_per=0.5,
+            baseline_objective=1.5,
+            selected_objective=4.0,
+            predicted_sinr_gain_db=2.5,
+        )
+        _inject_congested_zone(zones, "Z3")
+
+        await engine._iterate()
+        await asyncio.sleep(0.1)
+
+        scheduling_updates = [
+            update for update in sent_updates
+            if update["message_type"] == "SCHEDULING_UPDATE"
+        ]
+        assert len(scheduling_updates) == 1
+        assert scheduling_updates[0]["schedule_policy"] == "weighted"
+        assert scheduling_updates[0]["zone_service_multipliers"]["Z3"] == 2.0
+        assert all(
+            scheduling_updates[0]["zone_service_multipliers"][zid] == 1.0
+            for zid in ("Z1", "Z2", "Z4", "Z5")
+        )
+        ris_updates = [
+            update for update in sent_updates
+            if update["message_type"] == "RIS_STATE_UPDATE"
+        ]
+        assert len(ris_updates) == 1
+        assert ris_updates[0]["zone_id"] == "Z3"
+        assert ris_updates[0]["config_version"] == 1
+        assert ris_updates[0]["zone_sinr_offset_db"] == 2.5
+        assert ris_updates[0]["panels"][0]["panel_id"] == 14
+        assert len(ris_updates[0]["panels"]) == 6
+        assert panels.by_zone("Z3")[0].config_version == 1
+        assert all(panel.config_version == 1 for panel in panels.by_zone("Z3"))
+
+
+    @pytest.mark.asyncio
+    async def test_rejected_laptop_a_update_does_not_change_laptop_b_panel_state(self):
+        async def reject_update(message):
+            return False
+
+        zones, panels, scheduler, oob, optimizer, engine = _build_all(
+            loss_prob=0.0,
+            control_update_sender=reject_update,
+        )
+        optimizer.optimize_zone = lambda zone_id, panel_registry, current_sinr_db=None: OptResult(
+            opt_id="test-opt",
+            zone_id=zone_id,
+            ts=time.time(),
+            decision="APPLY",
+            reason="deterministic integration test",
+            baseline_codebook=0,
+            selected_codebook=1,
+            pre_sinr_db=4.0,
+            pre_per=0.5,
+            baseline_objective=1.5,
+            selected_objective=4.0,
+            predicted_sinr_gain_db=2.5,
+        )
+        _inject_congested_zone(zones, "Z3")
+
+        await engine._iterate()
+        await asyncio.sleep(0.1)
+
+        assert panels.by_zone("Z3")[0].config_version == 0
+        assert panels.by_zone("Z3")[0].codebook_index == 0
+
+
+    @pytest.mark.asyncio
     async def test_congestion_triggers_optimization(self):
         """Congested zone should trigger the optimizer."""
         zones, panels, scheduler, oob, optimizer, engine = _build_all()
@@ -81,6 +176,21 @@ class TestB7ClosedLoop:
         # Optimizer should have produced at least one result
         results = optimizer.latest_results()
         assert "Z3" in results
+
+    def test_real_optimizer_selects_a_repeatable_zone_candidate(self):
+        zones, panels, scheduler, oob, optimizer, engine = _build_all()
+
+        first = optimizer.optimize_zone("Z3", panels, current_sinr_db=4.0)
+        second = optimizer.optimize_zone("Z3", panels, current_sinr_db=4.0)
+
+        assert first is not None and first.decision == "APPLY"
+        assert second is not None and second.decision == "APPLY"
+        assert first.selected_codebook == second.selected_codebook
+        assert first.predicted_sinr_gain_db >= 0.01
+        assert first.observed_sinr_db == 4.0
+        assert first.pre_sinr_db != first.observed_sinr_db
+        no_change = optimizer.optimize_zone("Z5", panels, current_sinr_db=4.0)
+        assert no_change is not None and no_change.decision == "NO_CHANGE"
 
 
     @pytest.mark.asyncio

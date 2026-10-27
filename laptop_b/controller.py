@@ -6,15 +6,17 @@ Simulated: zones, channel values, the OOB radio link, and RIS configurations
            are all software models.  Nothing is claimed as a physical measurement.
 """
 import asyncio
+import json
 import logging
 import time
+import uuid
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
 from common.constants import (MSG_FEEDBACK_REPORT, MSG_HEARTBEAT, PROTOCOL_VERSION)
-from common.framing import FrameDecoder, FramingError
+from common.framing import FrameDecoder, FramingError, encode_frame
 from common.messages import MessageError, decode_message
 from common.validation import ValidationError, validate_message
 
@@ -71,6 +73,9 @@ class ControllerB:
             channel_params=channel_params,
             policy=OptimizerPolicy(
                 cooldown_s=cfg.get("ris", {}).get("optimizer_cooldown_s", 5.0),
+                min_sinr_gain_db=cfg.get("ris", {}).get(
+                    "optimizer_min_sinr_gain_db", 0.01
+                ),
             ),
             codebook_size=ris["codebook_size"],
             zone_centers=_DEFAULT_ZONE_CENTERS,
@@ -105,6 +110,7 @@ class ControllerB:
             logger=self.log,
             closed_loop_enabled=(mode != "baseline"),
             optimize_interval_s=cfg.get("ris", {}).get("optimizer_interval_s", 5.0),
+            control_update_sender=self.send_control_update,
         )
 
         # --- Networking ---
@@ -113,6 +119,8 @@ class ControllerB:
         self.stats = Counter()
         self.expected_run_id = None
         self._conns = {}
+        self._pending_control_acks = {}
+        self._control_send_lock = asyncio.Lock()
         self._server = None
         self._start_ts = clock()
         self.telemetry_c_connected = False
@@ -170,7 +178,19 @@ class ControllerB:
                     self.log.error("framing error from %s: %s; closing connection", peer, exc)
                     break
                 for raw in frames:
-                    src = self.handle_frame(raw)
+                    try:
+                        incoming = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        incoming = None
+                    if (
+                        isinstance(incoming, dict)
+                        and incoming.get("message_type")
+                        in ("ACK_RIS_UPDATE", "ACK_SCHEDULING")
+                    ):
+                        self._handle_control_ack(incoming)
+                        src = None
+                    else:
+                        src = self.handle_frame(raw)
                     if src:
                         self._conns[writer] = src
         except (ConnectionError, OSError) as exc:
@@ -183,6 +203,87 @@ class ControllerB:
             except Exception:
                 pass
             self.log.info("connection closed from %s", peer)
+
+    async def send_control_update(self, message: dict, timeout_s: float = 5.0) -> bool:
+        """Send a control update to A and wait for A to confirm application."""
+        update_type = message.get("message_type", "")
+        category = (
+            "ris" if update_type == "RIS_STATE_UPDATE" else "scheduling"
+        )
+        writer = next(
+            (
+                conn for conn, source in self._conns.items()
+                if source == "A" and not conn.is_closing()
+            ),
+            None,
+        )
+        if writer is None:
+            self.stats["control_updates_no_connection"] += 1
+            self.stats[f"{category}_updates_no_connection"] += 1
+            return False
+
+        update_id = message.get("update_id") or uuid.uuid4().hex
+        if not isinstance(update_id, str) or not update_id:
+            raise ValueError("control update_id must be a non-empty string")
+        message["update_id"] = update_id
+        loop = asyncio.get_running_loop()
+        ack_future = loop.create_future()
+        expected_ack_type = (
+            "ACK_RIS_UPDATE"
+            if update_type == "RIS_STATE_UPDATE"
+            else "ACK_SCHEDULING"
+        )
+
+        async with self._control_send_lock:
+            self._pending_control_acks[update_id] = (
+                ack_future,
+                expected_ack_type,
+            )
+            try:
+                raw = json.dumps(
+                    message, separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
+                writer.write(encode_frame(raw, self.max_bytes))
+                await writer.drain()
+                status = await asyncio.wait_for(ack_future, timeout=timeout_s)
+            except (OSError, asyncio.TimeoutError, ValueError) as exc:
+                self.stats["control_updates_failed"] += 1
+                self.stats[f"{category}_updates_failed"] += 1
+                self.log.warning(
+                    "Laptop A control update %s failed: %s", update_id, exc
+                )
+                return False
+            finally:
+                self._pending_control_acks.pop(update_id, None)
+
+        if status != "applied":
+            self.stats["control_updates_rejected"] += 1
+            self.stats[f"{category}_updates_rejected"] += 1
+            self.log.warning(
+                "Laptop A rejected control update %s (%s)", update_id, status
+            )
+            return False
+
+        self.stats["control_updates_applied"] += 1
+        self.stats[f"{category}_updates_applied"] += 1
+        return True
+
+    def _handle_control_ack(self, message: dict) -> None:
+        update_id = message.get("update_id")
+        pending = self._pending_control_acks.get(update_id)
+        if pending is None:
+            self.stats["control_acks_unmatched"] += 1
+            self.log.warning("unmatched Laptop A control ACK: %s", update_id)
+            return
+        future, expected_ack_type = pending
+        if future.done():
+            return
+        if message.get("message_type") != expected_ack_type:
+            self.stats["control_acks_malformed"] += 1
+            self.log.warning("unexpected ACK type for Laptop A update %s", update_id)
+            future.set_result("rejected")
+            return
+        future.set_result(message.get("status", "rejected"))
 
     # ---------------------------------------------------------------- message handling
 
@@ -292,6 +393,10 @@ class ControllerB:
             f"Feedback received={s['feedback_received']} accepted={s['feedback_accepted']} | "
             f"Stale/rejected={s['rejected']} | Malformed={s['malformed']} | "
             f"Framing errors={s['framing_errors']}",
+            f"Control updates applied={s['control_updates_applied']} | "
+            f"rejected={s['control_updates_rejected']} | "
+            f"failed={s['control_updates_failed']} | "
+            f"no A link={s['control_updates_no_connection']}",
             "ZONES:",
             *zone_lines,
             f"RIS panels: total={self.panels.total} | active configs={self.panels.active_configs} | "
@@ -307,9 +412,11 @@ class ControllerB:
         latest = self.oob.history[-1] if self.oob.history else None
         last_decision = None
         if latest is not None:
+            panel = self.panels.panels.get(latest.target_panel_id)
+            applied = panel is not None and panel.config_version >= latest.config_version
             last_decision = {
                 "timestamp": latest.created_ts,
-                "decision": "RIS_RECONFIGURE",
+                "decision": "RIS_RECONFIGURE" if applied else "RIS_UPDATE_NOT_APPLIED",
                 "reason": latest.reason,
                 "zone_id": latest.zone_id,
                 "panel_id": latest.target_panel_id,
@@ -350,8 +457,15 @@ class ControllerB:
         oob_metrics = dict(self.oob.stats)
         oob_metrics.update({
             "unique_commands": self.oob.stats.get("commands_issued", 0),
+            "acknowledged": self.oob.stats.get("commands_acked", 0),
             "acknowledged_commands": self.oob.stats.get("commands_acked", 0),
             "timeouts": self.oob.stats.get("timeouts", 0),
+            "a_control_updates_applied": self.stats.get("control_updates_applied", 0),
+            "a_control_updates_rejected": self.stats.get("control_updates_rejected", 0),
+            "a_ris_updates_applied": self.stats.get("ris_updates_applied", 0),
+            "a_scheduling_updates_applied": self.stats.get(
+                "scheduling_updates_applied", 0
+            ),
         })
         return {
             "controller_status": {
